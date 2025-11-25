@@ -80,16 +80,28 @@ import {
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-// --- CONFIGURACIÓN FIREBASE ---
-const firebaseConfig = JSON.parse(__firebase_config || '{}');
+// --- CONFIGURACIÓN FIREBASE CORREGIDA ---
+// 1. Usamos los datos reales de TU proyecto "natura-a5c0e"
+const firebaseConfig = {
+  apiKey: "AIzaSyDwPmUUYFYuoIZFKlY7T6ZHbBB65GeyJzo",
+  authDomain: "natura-a5c0e.firebaseapp.com",
+  projectId: "natura-a5c0e",
+  storageBucket: "natura-a5c0e.firebasestorage.app", // <--- Este es el bucket correcto
+  messagingSenderId: "273052718882",
+  appId: "1:273052718882:web:e1b95d14fb26982be0377b",
+  measurementId: "G-S04ET4J8Q6"
+};
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
-// MODIFICADO: Apuntar al bucket específico solicitado
-const storage = getStorage(app, "gs://negocio-51df2.firebasestorage.app");
 
-const APP_ID = typeof __app_id !== 'undefined' ? __app_id : "natura-produccion-main";
+// 2. CORREGIDO: Quitamos la URL "gs://negocio..." vieja.
+// Al poner solo getStorage(app), Firebase usa automáticamente el bucket definido arriba en firebaseConfig.
+const storage = getStorage(app); 
+
+// 3. CORREGIDO: Quitamos la variable __app_id que daba error
+const APP_ID = "natura-produccion-main";
 
 // --- CONSTANTES ---
 const BRANDS = ['Natura', 'Avon', 'Cyzone'];
@@ -1548,3 +1560,4 @@ export default function PosApp() {
 function NavButton({ icon, label, active, onClick }) {
     return <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${active ? 'text-orange-600 bg-orange-50 scale-105' : 'text-stone-400 hover:bg-stone-50'}`}>{React.cloneElement(icon, { className: `w-6 h-6 ${active ? 'fill-current' : ''}` })}<span className="text-[10px] font-bold">{label}</span></button>
 };
+
