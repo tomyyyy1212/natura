@@ -65,7 +65,11 @@ import {
   DollarSign, 
   Percent, 
   ChevronDown, 
-  ExternalLink
+  ExternalLink,
+  QrCode,
+  CreditCard as DebitCard,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -122,6 +126,31 @@ const generateShortId = () => {
   return `${number}-${letters}`;
 };
 
+// --- COMPONENTE INPUT DINERO EN VIVO ---
+const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
+    // Formatear para mostrar
+    const displayValue = value ? '$' + parseInt(value).toLocaleString('es-CL') : '';
+
+    const handleChange = (e) => {
+        // Eliminar todo lo que no sea número
+        const rawValue = e.target.value.replace(/\D/g, '');
+        const numberValue = rawValue === '' ? '' : parseInt(rawValue, 10);
+        onChange(numberValue);
+    };
+
+    return (
+        <input
+            type="text"
+            inputMode="numeric"
+            className={className}
+            placeholder={placeholder}
+            value={displayValue}
+            onChange={handleChange}
+            autoFocus={autoFocus}
+        />
+    );
+};
+
 export default function PosApp() {
 
   const formatMoney = (amount) => {
@@ -166,7 +195,7 @@ export default function PosApp() {
   const [deliveryType, setDeliveryType] = useState('immediate'); // 'immediate' | 'order'
   const [paymentPlanType, setPaymentPlanType] = useState('full'); // 'full' | 'deposit' | 'installments'
   
-  // ESTADO CHECKOUT MODIFICADO: Incluye archivo de recibo inicial
+  // ESTADO CHECKOUT
   const [checkoutData, setCheckoutData] = useState({
       downPayment: '', // Pie o abono
       installmentsCount: 3,
@@ -194,7 +223,11 @@ export default function PosApp() {
   // Modales
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  
+  // CLIENTES MODAL Y ESTADO DE EDICIÓN
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState(null);
+
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
   const [showPreTicket, setShowPreTicket] = useState(false); 
   const [showStockAlertModal, setShowStockAlertModal] = useState(false); 
@@ -544,12 +577,7 @@ export default function PosApp() {
                 id: 'init_' + now.getTime()
             };
 
-            // Inyectar este registro en el primer item del cronograma (que ya debería estar marcado como paid o pending)
-            // Si es FULL IMMEDIATE, el schedule tiene 1 item 'total'. Lo marcamos pagado y le metemos el history.
-            // Si es DEPOSIT, el schedule tiene 2 items. El 1ro 'abono' lo marcamos pagado y le metemos el history.
-            
             if (paymentSchedule.length > 0) {
-                // Asumimos que el pago inicial corresponde al primer item del cronograma
                 paymentSchedule[0] = {
                     ...paymentSchedule[0],
                     status: 'paid', // Aseguramos que esté pagado
@@ -1181,6 +1209,18 @@ export default function PosApp() {
     catch (e) { console.error(e); triggerAlert("Error", "No se pudo guardar.", "error"); }
   };
 
+  // --- GESTION DE CATEGORÍAS: ELIMINAR ---
+  const handleDeleteCategory = async (catId) => {
+      if(!window.confirm("¿Seguro que quieres borrar esta categoría?")) return;
+      try {
+          await deleteDoc(doc(db, `artifacts/${APP_ID}/public/data/categories`, catId));
+          triggerAlert("Borrada", "Categoría eliminada", "success");
+      } catch (e) {
+          console.error(e);
+          triggerAlert("Error", "No se pudo borrar", "error");
+      }
+  };
+
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -1229,18 +1269,35 @@ export default function PosApp() {
     };
 
     try { 
-        const docRef = await addDoc(collection(db, `artifacts/${APP_ID}/public/data/clients`), clientData); 
-        setIsClientModalOpen(false); 
-        // Si estamos en checkout, autoseleccionar
-        if (isCheckoutModalOpen) {
-             setSelectedClient(docRef.id);
-             setClientSearchTerm(clientData.name);
+        if (editingClient) {
+            await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/clients`, editingClient.id), clientData);
+            triggerAlert("Actualizado", "Cliente editado correctamente.", "success");
+        } else {
+            const docRef = await addDoc(collection(db, `artifacts/${APP_ID}/public/data/clients`), clientData); 
+            // Si estamos en checkout, autoseleccionar
+            if (isCheckoutModalOpen) {
+                 setSelectedClient(docRef.id);
+                 setClientSearchTerm(clientData.name);
+            }
+            triggerAlert("Cliente Creado", "El cliente ha sido registrado exitosamente.", "success"); 
         }
-        triggerAlert("Cliente Creado", "El cliente ha sido registrado exitosamente.", "success"); 
+        setIsClientModalOpen(false); 
+        setEditingClient(null);
     } catch (e) { 
         console.error(e);
         triggerAlert("Error", "Fallo al guardar.", "error"); 
     }
+  };
+
+  const handleDeleteClient = async (clientId) => {
+      if (!window.confirm("¿Eliminar este cliente?")) return;
+      try {
+          await deleteDoc(doc(db, `artifacts/${APP_ID}/public/data/clients`, clientId));
+          triggerAlert("Eliminado", "Cliente borrado.", "success");
+      } catch(e) {
+          console.error(e);
+          triggerAlert("Error", "No se pudo eliminar", "error");
+      }
   };
 
   const handleSaveSupplier = async (e) => {
@@ -1428,6 +1485,7 @@ export default function PosApp() {
           case 'inventory': return 'Inventario';
           case 'reports': return 'Reportes';
           case 'finances': return 'Finanzas';
+          case 'clients': return 'Clientes';
           default: return view;
       }
   };
@@ -1627,7 +1685,7 @@ export default function PosApp() {
                                 <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
                                     <div className="p-2 bg-white border-b relative space-y-2"><div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div><div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div></div>
                                     <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48"><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{filteredProducts.map(p => (<button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full"><div className="aspect-square w-full relative">{p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}</div><div className="p-2 flex flex-col flex-1 justify-between text-left w-full"><span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span><div className="mt-2 flex justify-between items-end w-full"><span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span><div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div></div></div></button>))}</div></div>
-                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><input type="number" className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={e => updateTransactionPrice(item.id, parseInt(e.target.value) || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
+                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><MoneyInput className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={val => updateTransactionPrice(item.id, val || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
                                 </div>
                             )}
                         </div>
@@ -1770,8 +1828,21 @@ export default function PosApp() {
         {/* CLIENTS */}
         {view === 'clients' && (
             <div className="p-4 pb-24 overflow-y-auto">
-                <button onClick={() => setIsClientModalOpen(true)} className="w-full py-3 bg-orange-600 text-white font-bold rounded-xl mb-4 shadow-lg">Crear Cliente</button>
-                {clients.map(c => <div key={c.id} className="p-4 bg-white rounded-xl shadow-sm border mb-2"><div className="font-bold">{c.name}</div><div className="text-sm text-stone-500">{c.phone}</div></div>)}
+                <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); }} className="w-full py-3 bg-orange-600 text-white font-bold rounded-xl mb-4 shadow-lg flex items-center justify-center gap-2"><Plus className="w-5 h-5"/> Crear Nuevo Cliente</button>
+                <div className="space-y-2">
+                    {clients.map(c => (
+                        <div key={c.id} className="p-4 bg-white rounded-xl shadow-sm border flex justify-between items-center group">
+                            <div>
+                                <div className="font-bold text-stone-800">{c.name}</div>
+                                <div className="text-sm text-stone-500 flex items-center gap-1"><Smartphone className="w-3 h-3"/> {c.phone || 'Sin teléfono'}</div>
+                            </div>
+                            <div className="flex gap-2 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onClick={() => { setEditingClient(c); setIsClientModalOpen(true); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Pencil className="w-4 h-4"/></button>
+                                <button onClick={() => handleDeleteClient(c.id)} className="p-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100"><Trash2 className="w-4 h-4"/></button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
             </div>
         )}
 
@@ -1821,7 +1892,7 @@ export default function PosApp() {
                               
                               {showClientOptions && (
                                   <div className="absolute top-full left-0 w-full bg-white border border-stone-100 rounded-xl shadow-xl max-h-48 overflow-y-auto z-20 mt-2 p-2">
-                                      <button onClick={() => {setIsClientModalOpen(true); setShowClientOptions(false);}} className="w-full p-3 text-left text-blue-600 font-bold hover:bg-blue-50 rounded-lg flex items-center gap-2"><Plus className="w-4 h-4"/> Crear Nuevo Cliente</button>
+                                      <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); setShowClientOptions(false); }} className="w-full p-3 text-left text-blue-600 font-bold hover:bg-blue-50 rounded-lg flex items-center gap-2"><Plus className="w-4 h-4"/> Crear Nuevo Cliente</button>
                                       {filteredClientsForSearch.map(c => (
                                           <div key={c.id} className="p-3 hover:bg-stone-50 cursor-pointer rounded-lg transition-colors flex justify-between items-center group" onClick={() => {
                                               setSelectedClient(c.id);
@@ -1840,58 +1911,62 @@ export default function PosApp() {
                           </div>
                       </div>
 
-                      {/* SECCIÓN 2: VERIFICACIÓN DE STOCK (AUTOMÁTICA) */}
+                      {/* SECCIÓN 2: DISPONIBILIDAD Y ENTREGA (UI MEJORADA) */}
                         <div className={!selectedClient ? 'opacity-40 pointer-events-none grayscale transition-all' : 'transition-all'}>
                             <div className="flex items-center gap-2 mb-3">
                                 <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">2</div>
-                                <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Disponibilidad y Entrega</h3>
+                                <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Disponibilidad</h3>
                             </div>
 
-                            <div className={`p-4 rounded-xl border-2 mb-4 transition-all ${stockAnalysis.canDeliverAll ? 'border-green-500 bg-green-50' : 'border-orange-500 bg-orange-50'}`}>
-                                <div className="flex items-center gap-3 mb-2">
-                                    {stockAnalysis.canDeliverAll ? (
-                                        <div className="p-2 bg-green-100 text-green-700 rounded-full"><PackageCheck className="w-6 h-6"/></div>
-                                    ) : (
-                                        <div className="p-2 bg-orange-100 text-orange-700 rounded-full"><Clock className="w-6 h-6"/></div>
-                                    )}
-                                    <div>
-                                        <h4 className={`font-bold ${stockAnalysis.canDeliverAll ? 'text-green-800' : 'text-orange-800'}`}>
-                                            {stockAnalysis.canDeliverAll ? 'Todo en Stock - Entrega Inmediata' : 'Falta Stock - Pedido por Encargo'}
+                            <div className={`p-5 rounded-2xl border transition-all relative overflow-hidden ${stockAnalysis.canDeliverAll ? 'border-emerald-200 bg-emerald-50/50' : 'border-amber-200 bg-amber-50/50'}`}>
+                                <div className="flex items-start gap-4 relative z-10">
+                                    <div className={`p-3 rounded-xl shadow-sm ${stockAnalysis.canDeliverAll ? 'bg-white text-emerald-600' : 'bg-white text-amber-600'}`}>
+                                        {stockAnalysis.canDeliverAll ? <PackageCheck className="w-6 h-6"/> : <Clock className="w-6 h-6"/>}
+                                    </div>
+                                    <div className="flex-1">
+                                        <h4 className={`font-bold text-base mb-1 ${stockAnalysis.canDeliverAll ? 'text-emerald-900' : 'text-amber-900'}`}>
+                                            {stockAnalysis.canDeliverAll ? 'Stock Disponible' : 'Falta Stock'}
                                         </h4>
-                                        <p className="text-xs text-stone-500">
+                                        <p className={`text-xs font-medium leading-relaxed ${stockAnalysis.canDeliverAll ? 'text-emerald-700' : 'text-amber-700'}`}>
                                             {stockAnalysis.canDeliverAll 
-                                                ? 'Se descontará del inventario automáticamente.' 
-                                                : 'Se registrará como pedido pendiente de llegada.'}
+                                                ? 'Todos los productos están listos para entrega inmediata.' 
+                                                : 'Algunos productos no están disponibles y quedarán pendientes.'}
                                         </p>
                                     </div>
                                 </div>
 
-                                {/* Lista de Verificación Visual */}
-                                <div className="bg-white/60 rounded-lg p-3 text-xs space-y-2 max-h-32 overflow-y-auto custom-scrollbar">
-                                    {stockAnalysis.available.map(i => (
-                                        <div key={i.id} className="flex justify-between items-center text-stone-600">
-                                            <span className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3 text-green-500"/> {i.name}</span>
-                                            <span className="font-bold text-green-600">En Stock</span>
+                                {/* Lista de faltantes si aplica */}
+                                {!stockAnalysis.canDeliverAll && (
+                                    <div className="mt-4 bg-white rounded-xl border border-amber-100 p-3 shadow-sm">
+                                        <div className="text-[10px] font-bold text-amber-400 uppercase mb-2 tracking-wider">Productos Faltantes</div>
+                                        <div className="space-y-2 max-h-32 overflow-y-auto custom-scrollbar pr-1">
+                                            {stockAnalysis.missing.map(i => (
+                                                <div key={i.id} className="flex justify-between items-center p-2 bg-amber-50/50 rounded-lg">
+                                                    <div className="flex items-center gap-2 overflow-hidden">
+                                                        <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></div>
+                                                        <span className="text-xs font-bold text-stone-700 truncate">{i.name}</span>
+                                                    </div>
+                                                    <span className="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded ml-2 whitespace-nowrap">Faltan {i.qty - i.currentStock}</span>
+                                                </div>
+                                            ))}
                                         </div>
-                                    ))}
-                                    {stockAnalysis.missing.map(i => (
-                                        <div key={i.id} className="flex justify-between items-center text-stone-600">
-                                            <span className="flex items-center gap-1"><XCircle className="w-3 h-3 text-red-500"/> {i.name}</span>
-                                            <span className="font-bold text-red-500">Faltan {i.qty - i.currentStock}</span>
-                                        </div>
-                                    ))}
-                                </div>
+                                    </div>
+                                )}
                                 
-                                {/* Opción manual para forzar (Opcional) */}
-                                <div className="mt-3 pt-3 border-t border-stone-200/50 flex justify-end">
-                                    <label className="flex items-center gap-2 text-xs text-stone-400 cursor-pointer">
-                                        <input type="checkbox" 
-                                            checked={deliveryType === 'immediate'} 
-                                            onChange={(e) => setDeliveryType(e.target.checked ? 'immediate' : 'order')}
-                                            className="rounded text-stone-800 focus:ring-0"
-                                        />
-                                        Forzar entrega inmediata (Descontar stock igual)
-                                    </label>
+                                {/* Toggle Switch Moderno */}
+                                <div className="mt-4 pt-4 border-t border-black/5 flex justify-between items-center">
+                                    <span className="text-xs font-bold text-stone-500 uppercase">Modo de Entrega</span>
+                                    <button 
+                                        onClick={() => setDeliveryType(prev => prev === 'immediate' ? 'order' : 'immediate')}
+                                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all shadow-sm border ${
+                                            deliveryType === 'immediate' 
+                                            ? 'bg-stone-800 text-white border-stone-800' 
+                                            : 'bg-white text-stone-500 border-stone-200'
+                                        }`}
+                                    >
+                                        {deliveryType === 'immediate' ? <ToggleRight className="w-4 h-4"/> : <ToggleLeft className="w-4 h-4"/>}
+                                        {deliveryType === 'immediate' ? 'Entrega Inmediata' : 'Por Encargo'}
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -1903,12 +1978,12 @@ export default function PosApp() {
                               <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Plan de Pago</h3>
                           </div>
                           
-                          <div className="bg-stone-100 p-1.5 rounded-xl flex mb-6">
+                          <div className="bg-stone-100 p-1 rounded-xl flex mb-6">
                               {['full', 'deposit', 'installments'].map(type => (
                                   <button 
                                       key={type}
                                       onClick={() => setPaymentPlanType(type)}
-                                      className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-all ${paymentPlanType === type ? 'bg-white text-stone-900 shadow-sm ring-1 ring-stone-200' : 'text-stone-500 hover:text-stone-700'}`}
+                                      className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-all ${paymentPlanType === type ? 'bg-white text-stone-900 shadow-sm ring-1 ring-black/5' : 'text-stone-500 hover:text-stone-700'}`}
                                   >
                                       {type === 'full' ? 'Pago Completo' : type === 'deposit' ? 'Abono' : 'Cuotas'}
                                   </button>
@@ -1929,24 +2004,43 @@ export default function PosApp() {
 
                                       {/* Si es entrega inmediata y pago completo, necesitamos registrar el pago REAL ahora */}
                                       {deliveryType === 'immediate' && (
-                                          <div className="text-left space-y-3 pt-4 border-t border-stone-200">
-                                              <label className="block text-xs font-bold uppercase text-stone-500">Medio de Pago</label>
-                                              <select className="w-full p-3 bg-white border border-stone-200 rounded-xl text-sm font-medium outline-none focus:border-stone-400" value={checkoutData.paymentMethod} onChange={e => setCheckoutData({...checkoutData, paymentMethod: e.target.value})}>
-                                                  <option value="Efectivo">Efectivo</option>
-                                                  <option value="Transferencia">Transferencia</option>
-                                                  <option value="Debito">Débito</option>
-                                              </select>
+                                          <div className="text-left space-y-4 pt-4 border-t border-stone-200">
+                                              <div>
+                                                  <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago</label>
+                                                  <div className="grid grid-cols-3 gap-2">
+                                                      {[
+                                                          { id: 'Efectivo', icon: Banknote, label: 'Efectivo' },
+                                                          { id: 'Transferencia', icon: QrCode, label: 'Transf.' },
+                                                          { id: 'Debito', icon: DebitCard, label: 'Débito' }
+                                                      ].map((m) => (
+                                                          <button 
+                                                              key={m.id}
+                                                              onClick={() => setCheckoutData({...checkoutData, paymentMethod: m.id})}
+                                                              className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${checkoutData.paymentMethod === m.id ? 'bg-stone-800 text-white border-stone-800 shadow-md' : 'bg-white text-stone-500 border-stone-200 hover:bg-stone-50'}`}
+                                                          >
+                                                              <m.icon className="w-5 h-5 mb-1"/>
+                                                              <span className="text-[10px] font-bold">{m.label}</span>
+                                                          </button>
+                                                      ))}
+                                                  </div>
+                                              </div>
 
-                                              <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-3 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
+                                              <div className="relative group">
                                                   <input 
                                                       type="file" 
                                                       accept="image/*"
                                                       onChange={(e) => setCheckoutData({...checkoutData, initialReceiptFile: e.target.files[0]})}
-                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                   />
-                                                  <Upload className={`w-5 h-5 mx-auto mb-1 ${checkoutData.initialReceiptFile ? 'text-emerald-500' : ''}`}/>
-                                                  <span className={`text-[10px] font-bold block ${checkoutData.initialReceiptFile ? 'text-emerald-600' : ''}`}>{checkoutData.initialReceiptFile ? "Archivo Seleccionado" : "Subir Comprobante"}</span>
-                                                  <span className="text-[9px] opacity-70">{checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "(Opcional)"}</span>
+                                                  <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-all ${checkoutData.initialReceiptFile ? 'border-green-400 bg-green-50' : 'border-stone-300 hover:border-stone-400 bg-white'}`}>
+                                                      <Upload className={`w-6 h-6 mx-auto mb-2 ${checkoutData.initialReceiptFile ? 'text-green-600' : 'text-stone-400'}`}/>
+                                                      <div className={`text-xs font-bold ${checkoutData.initialReceiptFile ? 'text-green-700' : 'text-stone-600'}`}>
+                                                          {checkoutData.initialReceiptFile ? "Comprobante Listo" : "Subir Comprobante"}
+                                                      </div>
+                                                      <div className="text-[10px] text-stone-400 mt-1 truncate px-4">
+                                                          {checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "Haz click o arrastra la imagen"}
+                                                      </div>
+                                                  </div>
                                               </div>
                                           </div>
                                       )}
@@ -1955,42 +2049,58 @@ export default function PosApp() {
 
                               {/* ABONO */}
                               {paymentPlanType === 'deposit' && (
-                                  <div className="space-y-4">
+                                  <div className="space-y-5">
                                       <div>
                                           <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Monto Abono / Pie</label>
                                           <div className="relative">
-                                              <span className="absolute left-4 top-3.5 text-stone-400 font-bold">$</span>
-                                              <input 
-                                                  type="number" 
-                                                  className="w-full pl-8 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl font-bold text-stone-800 focus:ring-2 focus:ring-stone-900 outline-none" 
+                                              <MoneyInput 
+                                                  className="w-full pl-4 pr-4 py-4 bg-white border border-stone-200 rounded-2xl text-xl font-black text-stone-800 focus:ring-2 focus:ring-stone-900 outline-none text-center" 
                                                   value={checkoutData.downPayment}
-                                                  onChange={e => setCheckoutData({...checkoutData, downPayment: e.target.value})}
-                                                  placeholder="0"
+                                                  onChange={val => setCheckoutData({...checkoutData, downPayment: val})}
+                                                  placeholder="$0"
                                               />
                                           </div>
                                       </div>
                                       
-                                      {/* Mostrar selector de medio de pago SIEMPRE si hay monto > 0 */}
-                                      {(checkoutData.downPayment > 0) && (
-                                          <div className="space-y-3">
+                                      {/* Selector de Medio de Pago Moderno */}
+                                      {(Number(checkoutData.downPayment) > 0) && (
+                                          <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
                                               <div>
-                                                  <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Medio de Pago (Abono)</label>
-                                                  <select className="w-full p-3 bg-white border border-stone-200 rounded-xl text-sm font-medium outline-none focus:border-stone-400" value={checkoutData.paymentMethod} onChange={e => setCheckoutData({...checkoutData, paymentMethod: e.target.value})}>
-                                                      <option value="Efectivo">Efectivo</option>
-                                                      <option value="Transferencia">Transferencia</option>
-                                                      <option value="Debito">Débito</option>
-                                                  </select>
+                                                  <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago (Abono)</label>
+                                                  <div className="grid grid-cols-3 gap-2">
+                                                      {[
+                                                          { id: 'Efectivo', icon: Banknote, label: 'Efectivo' },
+                                                          { id: 'Transferencia', icon: QrCode, label: 'Transf.' },
+                                                          { id: 'Debito', icon: DebitCard, label: 'Débito' }
+                                                      ].map((m) => (
+                                                          <button 
+                                                              key={m.id}
+                                                              onClick={() => setCheckoutData({...checkoutData, paymentMethod: m.id})}
+                                                              className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${checkoutData.paymentMethod === m.id ? 'bg-stone-800 text-white border-stone-800 shadow-md scale-[1.02]' : 'bg-white text-stone-500 border-stone-200 hover:bg-stone-50'}`}
+                                                          >
+                                                              <m.icon className="w-5 h-5 mb-1"/>
+                                                              <span className="text-[10px] font-bold">{m.label}</span>
+                                                          </button>
+                                                      ))}
+                                                  </div>
                                               </div>
-                                              <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-3 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
+
+                                              <div className="relative group">
                                                   <input 
                                                       type="file" 
                                                       accept="image/*"
                                                       onChange={(e) => setCheckoutData({...checkoutData, initialReceiptFile: e.target.files[0]})}
-                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                   />
-                                                  <Upload className={`w-5 h-5 mx-auto mb-1 ${checkoutData.initialReceiptFile ? 'text-emerald-500' : ''}`}/>
-                                                  <span className={`text-[10px] font-bold block ${checkoutData.initialReceiptFile ? 'text-emerald-600' : ''}`}>{checkoutData.initialReceiptFile ? "Archivo Seleccionado" : "Subir Comprobante"}</span>
-                                                  <span className="text-[9px] opacity-70">{checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "(Opcional)"}</span>
+                                                  <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-all ${checkoutData.initialReceiptFile ? 'border-green-400 bg-green-50' : 'border-stone-300 hover:border-stone-400 bg-white'}`}>
+                                                      <Upload className={`w-6 h-6 mx-auto mb-2 ${checkoutData.initialReceiptFile ? 'text-green-600' : 'text-stone-400'}`}/>
+                                                      <div className={`text-xs font-bold ${checkoutData.initialReceiptFile ? 'text-green-700' : 'text-stone-600'}`}>
+                                                          {checkoutData.initialReceiptFile ? "Comprobante Cargado" : "Subir Comprobante"}
+                                                      </div>
+                                                      <div className="text-[10px] text-stone-400 mt-1 truncate px-4">
+                                                          {checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "Toca para seleccionar imagen"}
+                                                      </div>
+                                                  </div>
                                               </div>
                                           </div>
                                       )}
@@ -2137,22 +2247,32 @@ export default function PosApp() {
                           <div className="bg-stone-50 p-5 rounded-2xl border border-stone-100 animate-in slide-in-from-bottom-4 duration-300">
                               <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Monto a Pagar</label>
                               <div className="relative mb-4">
-                                  <span className="absolute left-4 top-3.5 text-stone-400 font-bold text-lg">$</span>
-                                  <input 
-                                      type="number" 
-                                      className="w-full pl-8 pr-4 py-3 border border-stone-200 rounded-xl text-2xl font-black text-stone-800 text-center focus:border-emerald-500 outline-none transition-colors" 
+                                  <MoneyInput 
+                                      className="w-full pl-4 pr-4 py-4 bg-white border border-stone-200 rounded-2xl text-2xl font-black text-stone-800 focus:border-emerald-500 outline-none text-center" 
                                       value={paymentAmountInput}
-                                      onChange={e => setPaymentAmountInput(e.target.value)}
-                                      placeholder="0"
+                                      onChange={val => setPaymentAmountInput(val)}
+                                      placeholder="$0"
+                                      autoFocus
                                   />
                               </div>
                               
                               <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago</label>
-                              <select className="w-full p-3 border border-stone-200 rounded-xl mb-4 bg-white text-sm font-bold text-stone-700 outline-none focus:border-emerald-500" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
-                                  <option value="Efectivo">Efectivo</option>
-                                  <option value="Transferencia">Transferencia</option>
-                                  <option value="Debito">Débito</option>
-                              </select>
+                              <div className="grid grid-cols-3 gap-2 mb-4">
+                                  {[
+                                      { id: 'Efectivo', icon: Banknote, label: 'Efectivo' },
+                                      { id: 'Transferencia', icon: QrCode, label: 'Transf.' },
+                                      { id: 'Debito', icon: DebitCard, label: 'Débito' }
+                                  ].map((m) => (
+                                      <button 
+                                          key={m.id}
+                                          onClick={() => setPaymentMethod(m.id)}
+                                          className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${paymentMethod === m.id ? 'bg-stone-800 text-white border-stone-800 shadow-md' : 'bg-white text-stone-500 border-stone-200 hover:bg-stone-50'}`}
+                                      >
+                                          <m.icon className="w-5 h-5 mb-1"/>
+                                          <span className="text-[10px] font-bold">{m.label}</span>
+                                      </button>
+                                  ))}
+                              </div>
 
                               <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-4 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
                                   <input 
@@ -2306,17 +2426,17 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* MODAL CREAR CLIENTE (Reutilizable) */}
+      {/* MODAL CREAR/EDITAR CLIENTE */}
       {isClientModalOpen && (
           <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
               <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
-                  <h2 className="font-bold text-lg mb-4">Nuevo Cliente</h2>
+                  <h2 className="font-bold text-lg mb-4">{editingClient ? 'Editar Cliente' : 'Nuevo Cliente'}</h2>
                   <form onSubmit={handleSaveClient}>
-                      <input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/>
-                      <input name="phone" className="w-full p-3 border rounded-xl mb-4" placeholder="Teléfono"/>
+                      <input name="name" required defaultValue={editingClient?.name} className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/>
+                      <input name="phone" defaultValue={editingClient?.phone} className="w-full p-3 border rounded-xl mb-4" placeholder="Teléfono"/>
                       <button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button>
                   </form>
-                  <button onClick={() => setIsClientModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button>
+                  <button onClick={() => { setIsClientModalOpen(false); setEditingClient(null); }} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button>
               </div>
           </div>
       )}
@@ -2500,7 +2620,18 @@ export default function PosApp() {
                   <option value="">Seleccionar Marca</option>
                   {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
-              <input name="price" required placeholder="Precio" value={productPriceInput} onChange={e => setProductPriceInput(e.target.value)} className="w-full p-3 border rounded-xl" />
+              
+              {/* Input Precio Formateado en Productos */}
+              <div className="relative">
+                  <span className="absolute left-3 top-3 text-stone-400">$</span>
+                  <MoneyInput 
+                      className="w-full pl-7 p-3 border rounded-xl" 
+                      value={productPriceInput.replace(/\D/g,'')} // Limpiamos porque el input espera numero puro
+                      onChange={val => setProductPriceInput(val)}
+                      placeholder="Precio" 
+                  />
+              </div>
+
               <select name="category" required defaultValue={editingProduct?.category} className="w-full p-3 border rounded-xl"><option value="">Categoría</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
               <button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button>
               <button type="button" onClick={() => setIsProductModalOpen(false)} className="w-full py-3 bg-stone-100 rounded-xl">Cancelar</button>
@@ -2509,7 +2640,27 @@ export default function PosApp() {
         </div>
       )}
 
-      {isCategoryModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nueva Categoría</h2><form onSubmit={e => { e.preventDefault(); simpleSave('categories', {name: new FormData(e.currentTarget).get('name')}, setIsCategoryModalOpen); }}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsCategoryModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
+      {isCategoryModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white p-6 rounded-2xl w-full max-w-sm flex flex-col max-h-[80vh]">
+                  <h2 className="font-bold text-lg mb-4">Gestionar Categorías</h2>
+                  <form onSubmit={e => { e.preventDefault(); simpleSave('categories', {name: new FormData(e.currentTarget).get('name')}, () => {}); e.target.reset(); }} className="mb-4">
+                      <input name="name" required className="w-full p-3 border rounded-xl mb-2" placeholder="Nueva Categoría..."/>
+                      <button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Agregar</button>
+                  </form>
+                  <div className="flex-1 overflow-y-auto border-t pt-2">
+                      <div className="text-xs text-stone-400 uppercase font-bold mb-2">Existentes</div>
+                      {categories.map(cat => (
+                          <div key={cat.id} className="flex justify-between items-center p-2 hover:bg-stone-50 rounded-lg group">
+                              <span>{cat.name}</span>
+                              <button onClick={() => handleDeleteCategory(cat.id)} className="text-stone-300 hover:text-red-500"><Trash2 className="w-4 h-4"/></button>
+                          </div>
+                      ))}
+                  </div>
+                  <button onClick={() => setIsCategoryModalOpen(false)} className="w-full mt-4 py-3 bg-stone-100 rounded-xl">Cerrar</button>
+              </div>
+          </div>
+      )}
       
       {isCycleModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Ciclo</h2><form onSubmit={e => { e.preventDefault(); simpleSave('cycles', {name: new FormData(e.currentTarget).get('name')}, setIsCycleModalOpen); }}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsCycleModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
 
@@ -2593,8 +2744,8 @@ export default function PosApp() {
         <NavButton icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => setView('pos')} />
         <NavButton icon={<ShoppingBag />} label="Pedidos" active={view === 'purchases'} onClick={() => setView('purchases')} />
         <NavButton icon={<Receipt />} label="Ventas" active={view === 'receipts'} onClick={() => setView('receipts')} />
-        {/* NEW FINANCE BUTTON */}
         <NavButton icon={<DollarSign />} label="Finanzas" active={view === 'finances'} onClick={() => setView('finances')} />
+        <NavButton icon={<Users />} label="Clientes" active={view === 'clients'} onClick={() => setView('clients')} />
         <NavButton icon={<Package />} label="Stock" active={view === 'inventory'} onClick={() => setView('inventory')} />
       </nav>
     </div>
