@@ -165,11 +165,14 @@ export default function PosApp() {
   const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
   const [deliveryType, setDeliveryType] = useState('immediate'); // 'immediate' | 'order'
   const [paymentPlanType, setPaymentPlanType] = useState('full'); // 'full' | 'deposit' | 'installments'
+  
+  // ESTADO CHECKOUT MODIFICADO: Incluye archivo de recibo inicial
   const [checkoutData, setCheckoutData] = useState({
       downPayment: '', // Pie o abono
       installmentsCount: 3,
-      paymentMethod: '', 
-      firstPaymentDate: new Date().toISOString().split('T')[0]
+      paymentMethod: 'Efectivo', // Default
+      firstPaymentDate: new Date().toISOString().split('T')[0],
+      initialReceiptFile: null // Nuevo campo para el archivo
   });
 
   const [paymentMethod, setPaymentMethod] = useState('Efectivo'); 
@@ -405,11 +408,9 @@ export default function PosApp() {
       const today = new Date();
       
       if (planType === 'full') {
-          // Cambio: "Pago Completo" ahora significa DEUDA TOTAL pendiente.
-          // Se paga después en Finanzas.
           schedule.push({
               number: 1,
-              date: null, // Sin fecha específica, es deuda corriente
+              date: null, 
               amount: total,
               status: 'pending',
               type: 'total'
@@ -419,33 +420,32 @@ export default function PosApp() {
           const deposit = Number(data.downPayment);
           const remaining = total - deposit;
           
-          // Primer pago (Abono) - ESTADO PAGADO (Se cobra al momento si es abono)
+          // Primer pago (Abono) - ESTADO PAGADO
           schedule.push({
               number: 1,
               date: today.getTime() / 1000,
               amount: deposit,
               status: 'paid',
               type: 'abono',
-              method: data.paymentMethod // Guardamos el metodo del abono
+              method: data.paymentMethod 
           });
           
           // Segundo pago (Saldo)
           if (remaining > 0) {
               schedule.push({
                   number: 2,
-                  date: null, // Fecha por definir
+                  date: null, 
                   amount: remaining,
                   status: 'pending',
                   type: 'saldo'
               });
           }
       } else if (planType === 'installments') {
-          // Cuotas
           const count = Number(data.installmentsCount);
           const amountPerQuota = Math.round(total / count);
           
           let startDate = new Date(data.firstPaymentDate);
-          startDate.setHours(12, 0, 0, 0); // Avoid timezone issues
+          startDate.setHours(12, 0, 0, 0);
 
           for (let i = 0; i < count; i++) {
               const paymentDate = new Date(startDate);
@@ -463,41 +463,27 @@ export default function PosApp() {
       return schedule;
   };
 
-  // --- SAVE CHECKOUT TRANSACTION (VERSIÓN FINAL FLEXIBLE) ---
+  // --- SAVE CHECKOUT TRANSACTION (VERSIÓN FINAL FLEXIBLE Y CON COMPROBANTE) ---
   const handleConfirmCheckout = async () => {
     if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
     
-    // --- SIN VALIDACIONES DE BLOQUEO DE STOCK O PAGO ---
-    // El sistema ahora permite registrar lo que sea. 
-    // Si entregas sin stock, el inventario quedará negativo (trazabilidad).
-    // Si entregas sin pagar completo, quedará deuda en finanzas (trazabilidad).
-
     const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
     let initialPaid = 0;
 
-    // Lógica de Dinero Inicial
+    // Lógica de Dinero Inicial y Validaciones
     if (paymentPlanType === 'full') {
-        // Si es inmediata, asumimos que recibes el dinero YA.
-        // Si es encargo, asumimos que es deuda total (salvo que quieras marcarlo pagado adelantado).
-        // Para simplificar el flujo automático:
         if (deliveryType === 'immediate') {
             initialPaid = total; 
         } else {
-            initialPaid = 0; // Encargo suele ser sin pago o con abono
+            initialPaid = 0; 
         }
     } else if (paymentPlanType === 'deposit') {
         initialPaid = Number(checkoutData.downPayment);
     }
-    // Si es 'installments', initialPaid es 0 (se paga en fechas futuras)
 
-    // Validación mínima solo para el medio de pago del abono real
-    if (initialPaid > 0 && !checkoutData.paymentMethod && paymentPlanType !== 'installments') {
-         // Si hay entrada de dinero real ahora, necesitamos saber cómo entró (Efectivo/Transf)
-         // Si es full inmediata, asumimos Efectivo por defecto si no hay selector, o lo pedimos.
-         // Para evitar trabas, si es Full Inmediata y no hay metodo, ponemos Efectivo por defecto.
-         if (paymentPlanType === 'full' && deliveryType === 'immediate') {
-             checkoutData.paymentMethod = 'Efectivo'; 
-         } else {
+    // Validación de Medio de Pago e Imagen si hay pago inicial
+    if (initialPaid > 0 && paymentPlanType !== 'installments') {
+         if (!checkoutData.paymentMethod) {
              triggerAlert("Falta Pago", "Selecciona el medio de pago.", "error");
              return;
          }
@@ -506,27 +492,37 @@ export default function PosApp() {
     setLoading(true);
     setProcessingMsg("Registrando Venta...");
 
+    let initialReceiptUrl = null;
+
     try {
+        // 1. Subir Comprobante si existe
+        if (checkoutData.initialReceiptFile) {
+            try {
+                const storageRef = ref(storage, `receipts/${Date.now()}_${checkoutData.initialReceiptFile.name}`);
+                const snap = await uploadBytes(storageRef, checkoutData.initialReceiptFile);
+                initialReceiptUrl = await getDownloadURL(snap.ref);
+            } catch (err) {
+                console.error("Error subiendo comprobante inicial", err);
+                // Continuamos aunque falle la imagen, pero idealmente avisaríamos.
+            }
+        }
+
         const batch = writeBatch(db);
         const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
         const displayId = generateShortId();
         const now = new Date();
 
-        // FIFO Logic (Solo si es entrega inmediata descontamos stock)
+        // FIFO Logic
         let transactionFIFO = 0;
         let finalItems = [...cart];
 
         if (deliveryType === 'immediate') {
              for (let item of finalItems) {
-                 // Calculamos costo FIFO aunque el stock quede negativo
                  const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
                  item.fifoTotalCost = totalCost; 
                  item.fifoDetails = fifoDetails;
                  transactionFIFO += totalCost;
-                 
-                 // Actualizamos lotes solo si había stock real
                  batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
-                 // Descontamos del producto general (puede quedar negativo)
                  batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
              }
         }
@@ -534,10 +530,38 @@ export default function PosApp() {
         const margin = total - transactionFIFO;
         const balance = total - initialPaid;
         
-        // Generar cronograma
-        // NOTA: Si es inmediata full, initialPaid == total, balance 0.
-        const paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
+        // Generar cronograma BASE
+        let paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
         
+        // --- MODIFICAR CRONOGRAMA PARA INCLUIR HISTORIAL DEL PAGO INICIAL ---
+        if (initialPaid > 0) {
+            // Crear el registro de pago detallado
+            const initialPaymentRecord = {
+                amount: initialPaid,
+                date: now.getTime() / 1000,
+                method: checkoutData.paymentMethod,
+                receiptUrl: initialReceiptUrl,
+                id: 'init_' + now.getTime()
+            };
+
+            // Inyectar este registro en el primer item del cronograma (que ya debería estar marcado como paid o pending)
+            // Si es FULL IMMEDIATE, el schedule tiene 1 item 'total'. Lo marcamos pagado y le metemos el history.
+            // Si es DEPOSIT, el schedule tiene 2 items. El 1ro 'abono' lo marcamos pagado y le metemos el history.
+            
+            if (paymentSchedule.length > 0) {
+                // Asumimos que el pago inicial corresponde al primer item del cronograma
+                paymentSchedule[0] = {
+                    ...paymentSchedule[0],
+                    status: 'paid', // Aseguramos que esté pagado
+                    paidAmount: initialPaid,
+                    paidAt: now.getTime() / 1000,
+                    method: checkoutData.paymentMethod,
+                    receiptUrl: initialReceiptUrl, // URL principal del item
+                    paymentHistory: [initialPaymentRecord] // Historial detallado
+                };
+            }
+        }
+
         const paymentStatus = balance <= 0 ? 'paid' : (initialPaid > 0 ? 'partial' : 'pending');
 
         const transactionData = {
@@ -550,12 +574,11 @@ export default function PosApp() {
             date: { seconds: now.getTime() / 1000 },
             
             paymentPlanType, 
-            paymentSchedule, 
+            paymentSchedule, // Cronograma con historial inyectado
             balance,          
             paymentStatus,    
             
-            // Si hubo pago inicial, guardamos el método. Si fue full inmediata, asumimos el input o default.
-            paymentMethod: (initialPaid > 0) ? (checkoutData.paymentMethod || 'Efectivo') : null, 
+            paymentMethod: (initialPaid > 0) ? checkoutData.paymentMethod : null, 
             
             totalCost: transactionFIFO,
             margin: margin,
@@ -573,6 +596,10 @@ export default function PosApp() {
         
         clearCart();
         setIsCheckoutModalOpen(false);
+        
+        // Limpiar campos específicos del checkout
+        setCheckoutData(prev => ({ ...prev, downPayment: '', initialReceiptFile: null }));
+
         triggerAlert("Éxito", `Venta ${displayId} registrada.`, "success");
 
     } catch (error) {
@@ -867,11 +894,8 @@ export default function PosApp() {
   };
 
   const handleConfirmDeliveryClick = (transaction) => {
-      // VALIDACIÓN CORREGIDA Y PERMISIVA PARA LEGACY: 
       const isInstallments = transaction.paymentPlanType === 'installments';
       const isPaid = transaction.paymentStatus === 'paid';
-      
-      // Si es data vieja (undefined), asumimos que se puede procesar (legacy bypass)
       const isLegacy = !transaction.paymentPlanType;
       
       if (!isInstallments && !isPaid && !isLegacy) {
@@ -944,8 +968,9 @@ export default function PosApp() {
       setCheckoutData({
           downPayment: '', 
           installmentsCount: 3,
-          paymentMethod: '', 
-          firstPaymentDate: new Date().toISOString().split('T')[0]
+          paymentMethod: 'Efectivo', 
+          firstPaymentDate: new Date().toISOString().split('T')[0],
+          initialReceiptFile: null
       });
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
@@ -1898,9 +1923,33 @@ export default function PosApp() {
                                   <div className="bg-stone-50 rounded-2xl p-6 border border-stone-200 text-center">
                                       <div className="text-stone-500 text-xs font-bold uppercase mb-1">Total a Pagar</div>
                                       <div className="text-4xl font-black text-stone-800 mb-2">${formatMoney(cartTotal)}</div>
-                                      <div className="text-xs text-stone-400 bg-white inline-block px-3 py-1 rounded-full border border-stone-100">
+                                      <div className="text-xs text-stone-400 bg-white inline-block px-3 py-1 rounded-full border border-stone-100 mb-4">
                                           {deliveryType === 'immediate' ? 'Se registra pago inmediato' : 'Se registra como deuda total'}
                                       </div>
+
+                                      {/* Si es entrega inmediata y pago completo, necesitamos registrar el pago REAL ahora */}
+                                      {deliveryType === 'immediate' && (
+                                          <div className="text-left space-y-3 pt-4 border-t border-stone-200">
+                                              <label className="block text-xs font-bold uppercase text-stone-500">Medio de Pago</label>
+                                              <select className="w-full p-3 bg-white border border-stone-200 rounded-xl text-sm font-medium outline-none focus:border-stone-400" value={checkoutData.paymentMethod} onChange={e => setCheckoutData({...checkoutData, paymentMethod: e.target.value})}>
+                                                  <option value="Efectivo">Efectivo</option>
+                                                  <option value="Transferencia">Transferencia</option>
+                                                  <option value="Debito">Débito</option>
+                                              </select>
+
+                                              <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-3 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
+                                                  <input 
+                                                      type="file" 
+                                                      accept="image/*"
+                                                      onChange={(e) => setCheckoutData({...checkoutData, initialReceiptFile: e.target.files[0]})}
+                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                                  />
+                                                  <Upload className={`w-5 h-5 mx-auto mb-1 ${checkoutData.initialReceiptFile ? 'text-emerald-500' : ''}`}/>
+                                                  <span className={`text-[10px] font-bold block ${checkoutData.initialReceiptFile ? 'text-emerald-600' : ''}`}>{checkoutData.initialReceiptFile ? "Archivo Seleccionado" : "Subir Comprobante"}</span>
+                                                  <span className="text-[9px] opacity-70">{checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "(Opcional)"}</span>
+                                              </div>
+                                          </div>
+                                      )}
                                   </div>
                               )}
 
@@ -1923,13 +1972,26 @@ export default function PosApp() {
                                       
                                       {/* Mostrar selector de medio de pago SIEMPRE si hay monto > 0 */}
                                       {(checkoutData.downPayment > 0) && (
-                                          <div>
-                                              <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Medio de Pago (Abono)</label>
-                                              <select className="w-full p-3 bg-white border border-stone-200 rounded-xl text-sm font-medium outline-none focus:border-stone-400" value={checkoutData.paymentMethod} onChange={e => setCheckoutData({...checkoutData, paymentMethod: e.target.value})}>
-                                                  <option value="">Seleccionar...</option>
-                                                  <option value="Efectivo">Efectivo</option>
-                                                  <option value="Transferencia">Transferencia</option>
-                                              </select>
+                                          <div className="space-y-3">
+                                              <div>
+                                                  <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Medio de Pago (Abono)</label>
+                                                  <select className="w-full p-3 bg-white border border-stone-200 rounded-xl text-sm font-medium outline-none focus:border-stone-400" value={checkoutData.paymentMethod} onChange={e => setCheckoutData({...checkoutData, paymentMethod: e.target.value})}>
+                                                      <option value="Efectivo">Efectivo</option>
+                                                      <option value="Transferencia">Transferencia</option>
+                                                      <option value="Debito">Débito</option>
+                                                  </select>
+                                              </div>
+                                              <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-3 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
+                                                  <input 
+                                                      type="file" 
+                                                      accept="image/*"
+                                                      onChange={(e) => setCheckoutData({...checkoutData, initialReceiptFile: e.target.files[0]})}
+                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                                  />
+                                                  <Upload className={`w-5 h-5 mx-auto mb-1 ${checkoutData.initialReceiptFile ? 'text-emerald-500' : ''}`}/>
+                                                  <span className={`text-[10px] font-bold block ${checkoutData.initialReceiptFile ? 'text-emerald-600' : ''}`}>{checkoutData.initialReceiptFile ? "Archivo Seleccionado" : "Subir Comprobante"}</span>
+                                                  <span className="text-[9px] opacity-70">{checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "(Opcional)"}</span>
+                                              </div>
                                           </div>
                                       )}
 
@@ -2039,7 +2101,7 @@ export default function PosApp() {
                                   <div className="relative z-10 flex justify-between items-center">
                                       <div>
                                           <div className="font-bold text-sm text-stone-800">
-                                              {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : 'Saldo Pendiente'}
+                                              {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : (item.type === 'total' ? 'Pago Total' : 'Saldo Pendiente')}
                                           </div>
                                           <div className="text-xs text-stone-500 mt-0.5">
                                               {item.date ? new Date(item.date * 1000).toLocaleDateString() : 'Fecha abierta'}
@@ -2299,7 +2361,7 @@ export default function PosApp() {
       {/* MODAL RECIBO */}
       {receiptDetails && (
         <div className="fixed inset-0 bg-black/60 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
-            <div className="bg-white w-full max-w-md h-[80vh] sm:h-auto sm:max-h-[85vh] sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
+            <div className="bg-white w-full max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
                 <div className="p-5 border-b flex justify-between items-center bg-stone-50">
                     <h2 className="font-bold text-lg flex items-center gap-2"><Receipt className="w-5 h-5"/> Detalle {receiptDetails.type === 'purchase' ? 'Recepción' : 'Venta'}</h2>
                     <button onClick={() => setReceiptDetails(null)} className="bg-white p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
@@ -2313,9 +2375,58 @@ export default function PosApp() {
                     {receiptDetails.type === 'sale' && (
                         <div className="bg-stone-50 p-3 rounded-xl border mb-4 text-xs space-y-1">
                             <div className="flex justify-between"><span>Repartidor:</span> <span className="font-bold">{receiptDetails.courier || 'No registrado'}</span></div>
-                            <div className="flex justify-between"><span>Pago:</span> <span className="font-bold">{receiptDetails.paymentMethod || '-'}</span></div>
+                            <div className="flex justify-between"><span>Estado de Pago:</span> 
+                                <span className={`font-bold px-2 py-0.5 rounded ${receiptDetails.paymentStatus === 'paid' ? 'bg-green-100 text-green-700' : receiptDetails.paymentStatus === 'partial' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>
+                                    {receiptDetails.paymentStatus === 'paid' ? 'PAGADO' : receiptDetails.paymentStatus === 'partial' ? 'PARCIAL' : 'PENDIENTE'}
+                                </span>
+                            </div>
                             {receiptDetails.deliveredAt && <div className="flex justify-between"><span>Fecha Salida:</span> <span>{formatDateWithTime(receiptDetails.deliveredAt?.seconds)}</span></div>}
                             {receiptDetails.finalizedAt && <div className="flex justify-between text-green-700 font-bold"><span>Fecha Entrega/Cobro:</span> <span>{formatDateSimple(receiptDetails.finalizedAt?.seconds)}</span></div>}
+                        </div>
+                    )}
+
+                    {/* --- HISTORIAL DE PAGOS (NUEVO) --- */}
+                    {receiptDetails.type === 'sale' && receiptDetails.paymentSchedule && (
+                        <div className="mb-6">
+                            <h3 className="text-xs font-bold text-stone-400 uppercase mb-2 flex items-center gap-1"><DollarSign className="w-3 h-3"/> Historial de Pagos</h3>
+                            <div className="space-y-2">
+                                {receiptDetails.paymentSchedule.map((item, idx) => (
+                                    <div key={idx} className={`border rounded-xl overflow-hidden ${item.status === 'paid' ? 'border-emerald-200 bg-emerald-50/30' : 'border-stone-100 bg-white'}`}>
+                                        <div className="p-3 flex justify-between items-center">
+                                            <div>
+                                                <div className="font-bold text-stone-700 text-xs">
+                                                    {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : (item.type === 'total' ? 'Pago Total' : 'Saldo Pendiente')}
+                                                </div>
+                                                <div className="text-[10px] text-stone-400">
+                                                    Monto: ${formatMoney(item.amount)} • {item.status === 'paid' ? 'Pagado' : 'Pendiente'}
+                                                </div>
+                                            </div>
+                                            {item.status === 'paid' && <CheckCircle2 className="w-4 h-4 text-emerald-500"/>}
+                                        </div>
+                                        {/* Detalle de transacciones dentro de este item */}
+                                        {item.paymentHistory && item.paymentHistory.length > 0 && (
+                                            <div className="bg-white border-t border-stone-100 p-2 text-[10px] space-y-2">
+                                                {item.paymentHistory.map((hist, hIdx) => (
+                                                    <div key={hIdx} className="flex justify-between items-center">
+                                                        <div className="flex flex-col">
+                                                            <span className="font-bold text-stone-600">{formatDateWithTime(hist.date)}</span>
+                                                            <span className="text-stone-400">{hist.method}</span>
+                                                        </div>
+                                                        <div className="flex flex-col items-end">
+                                                            <span className="font-bold text-stone-800">${formatMoney(hist.amount)}</span>
+                                                            {hist.receiptUrl && (
+                                                                <a href={hist.receiptUrl} target="_blank" rel="noreferrer" className="text-blue-500 underline flex items-center gap-1">
+                                                                    <ExternalLink className="w-3 h-3"/> Ver Recibo
+                                                                </a>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
 
@@ -2326,6 +2437,7 @@ export default function PosApp() {
                         </div>
                     )}
                     <div className="space-y-3">
+                        <h3 className="text-xs font-bold text-stone-400 uppercase">Productos</h3>
                         {(receiptDetails.items || []).map((item, idx) => (
                             <div key={idx} className="py-2 border-b border-dashed last:border-0">
                                 <div className="flex justify-between">
