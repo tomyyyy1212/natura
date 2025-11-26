@@ -60,7 +60,11 @@ import {
   Send,
   Bike,
   Undo2,
-  Loader2 // Agregamos un icono de carga
+  Loader2,
+  ShoppingBasket,
+  BoxSelect,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -84,7 +88,7 @@ import {
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-// --- CONFIGURACIÓN FIREBASE CORREGIDA ---
+// --- CONFIGURACIÓN FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyDwPmUUYFYuoIZFKlY7T6ZHbBB65GeyJzo",
   authDomain: "natura-a5c0e.firebaseapp.com",
@@ -106,6 +110,7 @@ const APP_ID = "natura-produccion-main";
 const BRANDS = ['Natura', 'Avon', 'Cyzone'];
 const SUPPLIERS_OPTIONS = ['Natura Web', 'Natura Catálogo', 'Belcorp Web', 'Belcorp Catálogo'];
 const COURIERS = ['Yo (Directo)', 'Mamá (Puesto Feria)', 'Tía Luisa']; 
+const ONLINE_STORES = ['Natura', 'Esika', 'L\'Bel']; 
 
 export default function PosApp() {
 
@@ -151,10 +156,19 @@ export default function PosApp() {
     
   const [loading, setLoading] = useState(true); 
   const [searchTerm, setSearchTerm] = useState('');
-  const [processingMsg, setProcessingMsg] = useState(''); // Mensaje de carga global
+  const [processingMsg, setProcessingMsg] = useState(''); 
 
-  // Alertas
+  // Alertas y Confirmaciones
   const [alertState, setAlertState] = useState({ show: false, title: '', message: '', type: 'info' }); 
+  const [confirmationState, setConfirmationState] = useState({ show: false, title: '', message: '', type: 'neutral', onConfirm: null });
+
+  // NUEVO: Estado para confirmar fecha de entrega diferida (Ventas)
+  const [confirmDeliveryModal, setConfirmDeliveryModal] = useState({ show: false, transaction: null });
+  const [deliveryDateInput, setDeliveryDateInput] = useState(new Date().toISOString().split('T')[0]);
+
+  // NUEVO: Estado para RECEPCIÓN DE MERCADERÍA (Pedidos Stock)
+  const [receivingStockModal, setReceivingStockModal] = useState({ show: false, transaction: null });
+  const [receivingItems, setReceivingItems] = useState([]); // Array plano de items desglosados
 
   // Modales
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
@@ -188,8 +202,16 @@ export default function PosApp() {
     
   const [showPurchaseHistory, setShowPurchaseHistory] = useState(false);
 
-  // Estados Pedido
-  const [purchaseMode, setPurchaseMode] = useState(null); 
+  // ESTADOS PEDIDO DE STOCK
+  // steps: 'source' -> 'config' -> 'method' -> 'cart'
+  const [stockOrderStep, setStockOrderStep] = useState('source'); 
+  const [stockSource, setStockSource] = useState(''); // 'catalog', 'online'
+  const [stockCycle, setStockCycle] = useState('');
+  const [selectedOnlineStore, setSelectedOnlineStore] = useState(''); 
+  const [isInstallments, setIsInstallments] = useState(false);
+  const [installmentsCount, setInstallmentsCount] = useState(1);
+
+  const [purchaseMode, setPurchaseMode] = useState(null); // 'internet', 'magazine'
   const [selectedCycle, setSelectedCycle] = useState('');
   const [magazineFile, setMagazineFile] = useState(null);
 
@@ -448,87 +470,121 @@ export default function PosApp() {
   };
 
   const handleDeleteProduct = async (productId) => {
-      if(window.confirm("¿Estás seguro de eliminar este producto?")) {
-        try {
-            await deleteDoc(doc(db, `artifacts/${APP_ID}/public/data/products`, productId));
-            triggerAlert("Eliminado", "Producto eliminado correctamente", "success");
-        } catch (error) {
-            triggerAlert("Error", "No se pudo eliminar el producto.", "error");
-        }
-      }
+      setConfirmationState({
+          show: true,
+          title: "Eliminar Producto",
+          message: "¿Estás seguro de que quieres eliminar este producto permanentemente?",
+          type: "danger",
+          onConfirm: async () => {
+              setConfirmationState(prev => ({ ...prev, show: false })); // Cerrar modal
+              setLoading(true);
+              setProcessingMsg("Eliminando...");
+              try {
+                  await deleteDoc(doc(db, `artifacts/${APP_ID}/public/data/products`, productId));
+                  triggerAlert("Eliminado", "Producto eliminado correctamente", "success");
+              } catch (error) {
+                  triggerAlert("Error", "No se pudo eliminar el producto.", "error");
+              } finally {
+                  setLoading(false);
+                  setProcessingMsg("");
+              }
+          }
+      });
   }
 
   const handleVoidTransaction = async (transaction) => {
       if (!transaction || !transaction.id) return;
       
+      let confirmTitle = "Eliminar Registro";
       let confirmMsg = `¿Eliminar registro de $${formatMoney(transaction.total)}?`;
+      let type = "neutral";
+
       if (transaction.saleStatus === 'in_transit') {
+          confirmTitle = "Devolución de Stock";
           confirmMsg = "IMPORTANTE: ¿El cliente NO retiró el pedido?\n\nAl eliminar este envío, el stock volverá a tu inventario automáticamente.";
+          type = "danger";
       } else if (transaction.saleStatus === 'pending') {
+          confirmTitle = "Cancelar Encargo";
           confirmMsg = "¿Cancelar encargo del cliente?\n\nSi ya compraste los productos, se quedarán en tu stock disponible.";
+          type = "danger";
       }
 
-      if (!window.confirm(confirmMsg)) return;
-      
-      setLoading(true);
-      setProcessingMsg('Procesando...');
-      try {
-          const batch = writeBatch(db);
-          batch.delete(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id));
-          // Si ya se descontó stock (completed o in_transit), devolverlo
-          if (transaction.saleStatus === 'completed' || transaction.saleStatus === 'in_transit') { 
-              transaction.items.forEach(item => {
-                  const productRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
-                  const adjustment = transaction.type === 'sale' ? item.qty : -item.qty;
-                  batch.update(productRef, { stock: increment(adjustment) });
-              });
-              if (transaction.type === 'purchase') {
-                  const batchesQ = query(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`), where('transactionId', '==', transaction.id));
-                  const batchesSnap = await getDocs(batchesQ);
-                  batchesSnap.forEach(b => batch.delete(b.ref));
+      setConfirmationState({
+          show: true,
+          title: confirmTitle,
+          message: confirmMsg,
+          type: type,
+          onConfirm: async () => {
+              setConfirmationState(prev => ({ ...prev, show: false }));
+              setLoading(true);
+              setProcessingMsg('Procesando...');
+              try {
+                  const batch = writeBatch(db);
+                  batch.delete(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id));
+                  // Si ya se descontó stock (completed o in_transit), devolverlo
+                  if (transaction.saleStatus === 'completed' || transaction.saleStatus === 'in_transit') { 
+                      transaction.items.forEach(item => {
+                          const productRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
+                          const adjustment = transaction.type === 'sale' ? item.qty : -item.qty;
+                          batch.update(productRef, { stock: increment(adjustment) });
+                      });
+                      if (transaction.type === 'purchase') {
+                          const batchesQ = query(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`), where('transactionId', '==', transaction.id));
+                          const batchesSnap = await getDocs(batchesQ);
+                          batchesSnap.forEach(b => batch.delete(b.ref));
+                      }
+                  }
+                  await batch.commit();
+                  setReceiptDetails(null);
+                  triggerAlert("Operación Exitosa", transaction.saleStatus === 'in_transit' ? "Stock devuelto al inventario." : "Registro eliminado.", "success");
+              } catch (error) {
+                  console.error("Error voiding transaction:", error);
+                  triggerAlert("Error", "No se pudo anular.", "error");
+              } finally {
+                  setLoading(false);
+                  setProcessingMsg('');
               }
           }
-          await batch.commit();
-          setReceiptDetails(null);
-          triggerAlert("Operación Exitosa", transaction.saleStatus === 'in_transit' ? "Stock devuelto al inventario." : "Registro eliminado.", "success");
-      } catch (error) {
-          console.error("Error voiding transaction:", error);
-          triggerAlert("Error", "No se pudo anular.", "error");
-      } finally {
-          setLoading(false);
-          setProcessingMsg('');
-      }
+      });
   };
 
   const handleEditPurchase = async (transaction) => {
+      // Para editar, el pedido no puede haber sido recibido aún (completed)
+      if (transaction.saleStatus === 'received') {
+          triggerAlert("No Editable", "Este pedido ya fue recibido y agregado al stock. No se puede editar.", "error");
+          return;
+      }
+
       if (transaction.type !== 'purchase') return;
+      
       setLoading(true);
-      setProcessingMsg("Cargando lotes originales...");
+      setProcessingMsg("Cargando pedido...");
 
       try {
-          const batchesRef = collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`);
-          const q = query(batchesRef, where('transactionId', '==', transaction.id));
-          const snapshot = await getDocs(q);
+          // Si no está recibido, los items están en la transacción
+          setCart(transaction.items);
           
-          const batchesMap = {};
-          const itemsWithBatchId = transaction.items.map(item => {
-              const matchingBatch = snapshot.docs.find(d => d.data().productId === item.id);
-              if (matchingBatch) {
-                  const bData = matchingBatch.data();
-                  batchesMap[matchingBatch.id] = { ...bData, id: matchingBatch.id };
-                  return { ...item, batchId: matchingBatch.id, originalQty: bData.initialQty, expirationDate: bData.expirationDate };
-              }
-              return { ...item, originalQty: item.qty };
-          });
+          // Cargar datos específicos de pedido
+          setStockSource(transaction.purchaseType || 'catalog');
+          setStockCycle(transaction.cycle || '');
+          if (transaction.purchaseType === 'online' && transaction.onlineStore) {
+              setSelectedOnlineStore(transaction.onlineStore);
+          }
+          
+          if (transaction.installmentsConfig) {
+              setIsInstallments(true);
+              setInstallmentsCount(transaction.installmentsConfig.count);
+          } else {
+              setIsInstallments(false);
+              setInstallmentsCount(1);
+          }
 
-          setCart(itemsWithBatchId);
-          setOriginalBatchesMap(batchesMap);
-          if(transaction.clientId) setSelectedSupplier(transaction.clientId);
           setView('purchases');
           setShowPurchaseHistory(false);
+          setStockOrderStep('cart'); // Ir directo al carro
           setPurchaseMode('internet'); 
           setEditingTransactionId(transaction.id);
-          triggerAlert("Modo Edición", "Ajusta cantidades. El sistema validará el stock vendido.", "info");
+          triggerAlert("Modo Edición", "Modifica el pedido antes de que llegue.", "info");
       } catch (error) {
           console.error(error);
           triggerAlert("Error", "No se pudo cargar para editar.", "error");
@@ -584,12 +640,14 @@ export default function PosApp() {
           
           // ESTADO: Si es 'Yo' -> completed. Si es otro -> in_transit
           const nextStatus = selectedCourier === 'Yo (Directo)' ? 'completed' : 'in_transit';
+          const now = new Date();
 
           batch.update(transRef, { 
               saleStatus: nextStatus, 
               courier: selectedCourier, // Guardamos quién lo lleva
               paymentMethod: deliveryPaymentMethod,
-              deliveredAt: { seconds: Date.now() / 1000 }, // Fecha de salida
+              deliveredAt: { seconds: now.getTime() / 1000 }, // Fecha de salida
+              finalizedAt: selectedCourier === 'Yo (Directo)' ? { seconds: now.getTime() / 1000 } : null, // Si soy yo, finaliza al tiro
               items: updatedItems,
               totalCost: finalTotalCost,
               margin: margin,
@@ -608,18 +666,30 @@ export default function PosApp() {
       }
   };
 
-  // CONFIRMA ENTREGA FINAL (De in_transit a completed)
-  const confirmTransitDelivery = async (transaction) => {
+  // PRE-CONFIRMACION: Abre modal para seleccionar fecha si es necesario
+  const handleConfirmDeliveryClick = (transaction) => {
+      setConfirmDeliveryModal({ show: true, transaction: transaction });
+      setDeliveryDateInput(new Date().toISOString().split('T')[0]); // Reset a hoy
+  };
+
+  // CONFIRMA ENTREGA FINAL (De in_transit a completed) CON FECHA ESPECIFICA
+  const processDeliveryConfirmation = async () => {
+      const transaction = confirmDeliveryModal.transaction;
       if (!transaction || !transaction.id) return;
-      if (!window.confirm(`¿Confirmar que ${transaction.courier} entregó el pedido y trajo el dinero?`)) return;
+      
+      setConfirmDeliveryModal({ show: false, transaction: null }); // Cerrar modal fecha
       setLoading(true);
       setProcessingMsg("Finalizando Venta...");
+      
       try {
+          // Convertir fecha input a timestamp
+          const selectedDate = new Date(deliveryDateInput + 'T12:00:00'); // Mediodía para evitar problemas de zona horaria
+          
           await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id), {
               saleStatus: 'completed',
-              finalizedAt: { seconds: Date.now() / 1000 }
+              finalizedAt: { seconds: selectedDate.getTime() / 1000 }
           });
-          triggerAlert("¡Listo!", "Venta finalizada correctamente.", "success");
+          triggerAlert("¡Listo!", "Venta finalizada con fecha seleccionada.", "success");
           setReceiptDetails(null);
       } catch (error) {
           console.error("Error finalizing transaction:", error);
@@ -629,6 +699,114 @@ export default function PosApp() {
           setProcessingMsg('');
       }
   };
+
+  // --- NUEVO: LOGICA RECEPCIÓN DE MERCADERÍA (PEDIDOS STOCK) ---
+
+  // 1. Abrir modal y preparar items desglosados
+  const handleReceiveStockClick = (transaction) => {
+      if (!transaction.items) return;
+      
+      // Desglosar items: Si viene qty: 3, crear 3 entradas
+      const flatItems = [];
+      transaction.items.forEach(item => {
+          for(let i=0; i < item.qty; i++) {
+              flatItems.push({
+                  ...item,
+                  uniqueKey: `${item.id}_${i}`, // Key temporal
+                  expirationDate: '',
+                  received: true // Por defecto asumimos que llegó
+              });
+          }
+      });
+
+      setReceivingItems(flatItems);
+      setReceivingStockModal({ show: true, transaction });
+  };
+
+  // 2. Actualizar estado de un item en la lista de recepción
+  const updateReceivingItem = (index, field, value) => {
+      const newItems = [...receivingItems];
+      newItems[index][field] = value;
+      setReceivingItems(newItems);
+  };
+
+  // 3. PRE-CONFIRMACION DE INGRESO DE STOCK (MODAL SEGURO)
+  const handleProcessStockReceiptClick = () => {
+      const receivedCount = receivingItems.filter(i => i.received).length;
+      const missingDates = receivingItems.some(i => i.received && !i.expirationDate);
+
+      if (receivedCount === 0) {
+          triggerAlert("Error", "Debes recibir al menos un producto.", "error");
+          return;
+      }
+      if (missingDates) {
+          triggerAlert("Faltan Fechas", "Ingresa el vencimiento de todos los productos recibidos.", "error");
+          return;
+      }
+
+      setConfirmationState({
+          show: true,
+          title: "Confirmar Recepción",
+          message: `Vas a ingresar ${receivedCount} productos al stock.\n¿Estás seguro de que los datos son correctos?`,
+          type: "success",
+          onConfirm: () => {
+              setConfirmationState(prev => ({...prev, show: false}));
+              processStockReceipt(); // Ejecutar la lógica real
+          }
+      });
+  };
+
+  // 4. Confirmar Recepción y Agregar Stock (Lógica Real)
+  const processStockReceipt = async () => {
+      const transaction = receivingStockModal.transaction;
+      if (!transaction) return;
+
+      const receivedItems = receivingItems.filter(i => i.received);
+
+      setLoading(true);
+      setProcessingMsg("Ingresando Stock...");
+      setReceivingStockModal({ show: false, transaction: null });
+
+      try {
+          const batch = writeBatch(db);
+          
+          // Crear Lotes y Actualizar Stock
+          receivedItems.forEach(item => {
+              const batchRef = doc(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`));
+              batch.set(batchRef, {
+                  productId: item.id,
+                  productName: item.name,
+                  date: { seconds: Date.now() / 1000 },
+                  cost: Number(item.transactionPrice),
+                  initialQty: 1, // Siempre 1 porque desglosamos
+                  remainingQty: 1,
+                  supplierId: transaction.clientId,
+                  expirationDate: item.expirationDate,
+                  transactionId: transaction.id
+              });
+              batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(1) });
+          });
+
+          // Actualizar transacción a 'received'
+          batch.update(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id), {
+              saleStatus: 'received', // ESTADO FINAL DE PEDIDO STOCK
+              receivedAt: { seconds: Date.now() / 1000 },
+              receivedItemsCount: receivedItems.length
+          });
+
+          await batch.commit();
+          triggerAlert("Stock Actualizado", `Se agregaron ${receivedItems.length} productos al inventario.`, "success");
+
+      } catch (error) {
+          console.error("Error receiving stock:", error);
+          triggerAlert("Error", "Falló la recepción de stock.", "error");
+      } finally {
+          setLoading(false);
+          setProcessingMsg("");
+      }
+  };
+
+  // -------------------------------------------------------------
 
   // Carrito
   const addToCart = (product) => {
@@ -654,6 +832,13 @@ export default function PosApp() {
       setPaymentMethod(''); setEditingTransactionId(null); setMagazineFile(null); 
       setOriginalBatchesMap({}); 
       setIsImmediateSale(false);
+      // Reset Stock Order fields
+      setStockOrderStep('source');
+      setStockSource('');
+      setStockCycle('');
+      setSelectedOnlineStore('');
+      setIsInstallments(false);
+      setInstallmentsCount(1);
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
 
@@ -690,9 +875,8 @@ export default function PosApp() {
         }
     }
     if (type === 'purchase') {
-        if (!selectedSupplier) { triggerAlert("Falta Proveedor", "Selecciona proveedor.", "info"); return; }
         if (cart.some(i => i.transactionPrice <= 0)) { triggerAlert("Costo 0", "Ingresa costos válidos.", "error"); return; }
-        if (cart.some(i => !i.expirationDate)) { triggerAlert("Faltan Fechas", "Ingresa vencimientos.", "error"); return; }
+        // YA NO VALIDAMOS FECHAS AQUI
     }
 
     setLoading(true);
@@ -702,65 +886,30 @@ export default function PosApp() {
         const batch = writeBatch(db);
 
         if (editingTransactionId && type === 'purchase') {
-             // Logica edición compra (igual que antes)
+             // MODO EDICIÓN PEDIDO STOCK (Solo actualizamos items y config, NO STOCK)
              const transRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, editingTransactionId);
              
-             for (const item of cart) {
-                 if (item.batchId && originalBatchesMap[item.batchId]) {
-                     const oldBatch = originalBatchesMap[item.batchId];
-                     const qtyDiff = item.qty - oldBatch.initialQty;
-                     if (qtyDiff < 0 && oldBatch.remainingQty < Math.abs(qtyDiff)) {
-                         throw new Error(`No puedes reducir ${item.name}. Unidades ya vendidas.`);
-                     }
-                     const batchRef = doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, item.batchId);
-                     batch.update(batchRef, {
-                         initialQty: item.qty,
-                         remainingQty: increment(qtyDiff), 
-                         cost: Number(item.transactionPrice),
-                         expirationDate: item.expirationDate
-                     });
-                     const prodRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
-                     batch.update(prodRef, { stock: increment(qtyDiff) });
-                 } else {
-                     const batchRef = doc(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`));
-                     batch.set(batchRef, {
-                         productId: item.id,
-                         productName: item.name,
-                         date: { seconds: Date.now() / 1000 },
-                         cost: Number(item.transactionPrice),
-                         initialQty: Number(item.qty),
-                         remainingQty: Number(item.qty),
-                         supplierId: selectedSupplier,
-                         expirationDate: item.expirationDate,
-                         transactionId: editingTransactionId
-                     });
-                     const prodRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
-                     batch.update(prodRef, { stock: increment(item.qty) });
-                 }
-             }
-             batch.update(transRef, { items: cart, total: cartTotal, clientId: selectedSupplier });
+             // Update main transaction data
+             const installmentsConfig = isInstallments ? {
+                 count: parseInt(installmentsCount),
+                 paid: 0,
+                 status: 'pending'
+             } : null;
+
+             batch.update(transRef, { 
+                 items: cart, 
+                 total: cartTotal, 
+                 purchaseType: stockSource,
+                 cycle: stockCycle,
+                 onlineStore: selectedOnlineStore,
+                 installmentsConfig: installmentsConfig
+             });
         }
         else {
             const newTransId = editingTransactionId || doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
             const originMethod = purchaseMode === 'magazine' ? 'PDF' : 'Manual';
 
-            if (type === 'purchase') {
-                cart.forEach(item => {
-                    const batchRef = doc(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`));
-                    batch.set(batchRef, {
-                        productId: item.id,
-                        productName: item.name,
-                        date: { seconds: Date.now() / 1000 },
-                        cost: Number(item.transactionPrice),
-                        initialQty: Number(item.qty),
-                        remainingQty: Number(item.qty),
-                        supplierId: selectedSupplier,
-                        expirationDate: item.expirationDate,
-                        transactionId: newTransId
-                    });
-                    batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(item.qty) });
-                });
-            } 
+            // SI ES PEDIDO DE STOCK (PURCHASE): SOLO GUARDAMOS EL PEDIDO, NO MOVEMOS STOCK AUN
             
             // Si es venta y es inmediata, descontamos stock ahora
             if (type === 'sale' && isImmediateSale) {
@@ -778,28 +927,56 @@ export default function PosApp() {
             const transactionFIFO = (type === 'sale' && isImmediateSale) ? cart.reduce((acc, i) => acc + (i.fifoTotalCost || 0), 0) : 0;
             const margin = type === 'sale' ? (cartTotal - transactionFIFO) : 0;
 
+            const now = new Date();
+
+            // Definir nombre proveedor
+            let clientName = selectedClient;
+            if (type === 'purchase') {
+                if (stockSource === 'catalog') clientName = 'Natura Catálogo';
+                else clientName = selectedOnlineStore ? `${selectedOnlineStore} Online` : 'Natura Web';
+            }
+
+            const installmentsConfig = (type === 'purchase' && isInstallments) ? {
+                 count: parseInt(installmentsCount),
+                 paid: 0,
+                 status: 'pending'
+            } : null;
+
             batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), {
                 id: newTransId, 
                 type,
                 items: [...cart],
                 total: cartTotal,
-                clientId: type === 'purchase' ? selectedSupplier : selectedClient,
-                date: { seconds: Date.now() / 1000 },
+                clientId: clientName,
+                date: { seconds: now.getTime() / 1000 },
                 paymentMethod: (type === 'sale' && isImmediateSale) ? paymentMethod : null,
                 totalCost: transactionFIFO,
                 margin: margin,
                 marginPercent: (type === 'sale' && cartTotal > 0) ? (margin/cartTotal)*100 : 0,
-                // Si es venta inmediata -> completed. Si es encargo normal -> pending
-                saleStatus: type === 'sale' ? (isImmediateSale ? 'completed' : 'pending') : 'completed',
+                
+                // ESTADOS:
+                // Venta Inmediata -> completed
+                // Venta Encargo -> pending
+                // Pedido Stock -> pending_arrival (NUEVO)
+                saleStatus: type === 'sale' ? (isImmediateSale ? 'completed' : 'pending') : 'pending_arrival',
+                
                 origin: type === 'purchase' ? originMethod : 'POS',
-                courier: (type === 'sale' && isImmediateSale) ? 'Yo (Directo)' : null // Marcar courier si es inmediato
+                courier: (type === 'sale' && isImmediateSale) ? 'Yo (Directo)' : null,
+                deliveredAt: (type === 'sale' && isImmediateSale) ? { seconds: now.getTime() / 1000 } : null,
+                finalizedAt: (type === 'sale' && isImmediateSale) ? { seconds: now.getTime() / 1000 } : null,
+                
+                // Nuevos campos pedido stock
+                purchaseType: type === 'purchase' ? stockSource : null,
+                cycle: type === 'purchase' ? stockCycle : null,
+                onlineStore: type === 'purchase' ? selectedOnlineStore : null,
+                installmentsConfig: installmentsConfig
             });
         }
 
         await batch.commit();
         clearCart();
         if (editingTransactionId) setPurchaseMode(null);
-        triggerAlert("Éxito", type === 'sale' && !isImmediateSale ? "Encargo guardado. Revísalo en Pedidos." : "Operación completada.", "success");
+        triggerAlert("Éxito", type === 'sale' ? "Venta/Encargo guardado." : "Pedido registrado. Confirma recepción cuando llegue.", "success");
     } catch (error) {
         console.error(error);
         triggerAlert("Error", "Fallo al guardar.", "error");
@@ -807,6 +984,43 @@ export default function PosApp() {
         setLoading(false);
         setProcessingMsg('');
     }
+  };
+
+  // NUEVO: Función para pagar cuota
+  const handlePayInstallment = async (transaction) => {
+      if (!transaction.installmentsConfig) return;
+      const currentPaid = transaction.installmentsConfig.paid;
+      const total = transaction.installmentsConfig.count;
+      
+      if (currentPaid >= total) return;
+
+      const newPaid = currentPaid + 1;
+      const newStatus = newPaid === total ? 'completed' : 'partial';
+
+      setLoading(true);
+      setProcessingMsg("Registrando Pago Cuota...");
+      
+      try {
+          await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id), {
+              'installmentsConfig.paid': newPaid,
+              'installmentsConfig.status': newStatus
+          });
+          
+          // Actualizar vista local del modal si está abierto
+          if(receiptDetails && receiptDetails.id === transaction.id) {
+              setReceiptDetails(prev => ({
+                  ...prev,
+                  installmentsConfig: { ...prev.installmentsConfig, paid: newPaid, status: newStatus }
+              }));
+          }
+          
+          triggerAlert("Pago Registrado", `Cuota ${newPaid}/${total} pagada correctamente.`, "success");
+      } catch(e) {
+          triggerAlert("Error", "No se pudo registrar el pago.", "error");
+      } finally {
+          setLoading(false);
+          setProcessingMsg("");
+      }
   };
 
   const simpleSave = async (collectionName, data, isModalOpenSetter) => {
@@ -1052,7 +1266,7 @@ export default function PosApp() {
   const getHeaderTitle = () => {
       switch(view) {
           case 'pos': return 'Registra Venta';
-          case 'purchases': return 'Registrar Stock';
+          case 'purchases': return 'Registro de Pedidos'; 
           case 'receipts': return 'Pedidos Clientes'; 
           case 'inventory': return 'Inventario';
           case 'reports': return 'Reportes';
@@ -1065,7 +1279,6 @@ export default function PosApp() {
   return (
     <div className="flex flex-col h-screen bg-stone-50 text-stone-800 font-sans overflow-hidden relative">
       
-      {/* --- GLOBAL LOADING OVERLAY (FIX) --- */}
       {loading && processingMsg && (
           <div className="fixed inset-0 bg-black/50 z-[110] flex flex-col items-center justify-center backdrop-blur-sm">
               <div className="bg-white p-6 rounded-2xl shadow-2xl flex flex-col items-center animate-in fade-in zoom-in duration-200">
@@ -1075,7 +1288,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* Alert - Z-Index 100 */}
       {alertState.show && (
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className={`bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center border-t-4 ${getAlertConfig(alertState.type).border}`}>
@@ -1087,7 +1299,138 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* Header */}
+      {confirmationState.show && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl border-t-4 border-stone-800">
+                <h3 className="text-lg font-bold mb-2 text-stone-800">{confirmationState.title}</h3>
+                <p className="text-sm text-stone-600 mb-6 whitespace-pre-line">{confirmationState.message}</p>
+                <div className="flex gap-3">
+                    <button 
+                        onClick={() => setConfirmationState(prev => ({...prev, show: false}))} 
+                        className="flex-1 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold"
+                    >
+                        Cancelar
+                    </button>
+                    <button 
+                        onClick={confirmationState.onConfirm} 
+                        className={`flex-1 py-3 text-white rounded-xl font-bold ${confirmationState.type === 'danger' ? 'bg-red-600' : confirmationState.type === 'success' ? 'bg-green-600' : 'bg-stone-800'}`}
+                    >
+                        Confirmar
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {confirmDeliveryModal.show && confirmDeliveryModal.transaction && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+                <h3 className="text-lg font-bold mb-2 text-stone-800">Confirmar Entrega</h3>
+                <p className="text-sm text-stone-600 mb-4">
+                    {confirmDeliveryModal.transaction.courier} ya entregó el pedido. 
+                    <br/>Por favor, indica la fecha real de entrega:
+                </p>
+                <div className="mb-6">
+                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">Fecha Real</label>
+                    <input 
+                        type="date" 
+                        className="w-full p-3 border rounded-xl bg-stone-50 font-bold text-stone-800"
+                        value={deliveryDateInput}
+                        onChange={(e) => setDeliveryDateInput(e.target.value)}
+                    />
+                </div>
+                <div className="flex gap-3">
+                    <button 
+                        onClick={() => setConfirmDeliveryModal({ show: false, transaction: null })} 
+                        className="flex-1 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold"
+                    >
+                        Cancelar
+                    </button>
+                    <button 
+                        onClick={processDeliveryConfirmation} 
+                        className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold"
+                    >
+                        Confirmar
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* --- MODAL RECEPCIÓN DE MERCADERÍA (Stock) --- */}
+      {receivingStockModal.show && (
+        <div className="fixed inset-0 bg-black/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                <div className="p-4 border-b bg-green-50 flex justify-between items-center">
+                    <div>
+                        <h2 className="font-bold text-xl text-green-800 flex items-center gap-2"><PackageCheck className="w-6 h-6"/> Recibir Mercadería</h2>
+                        <p className="text-xs text-green-600">Ingresa vencimientos y confirma llegada.</p>
+                    </div>
+                    <button onClick={() => setReceivingStockModal({show: false, transaction: null})}><X className="w-6 h-6 text-green-400"/></button>
+                </div>
+                
+                <div className="px-4 py-2 bg-green-100 border-b border-green-200 flex items-center gap-2 text-green-800 text-xs font-bold">
+                    <Info className="w-4 h-4"/>
+                    <span>Tip: Marca el check <CheckSquare className="w-3 h-3 inline"/> si llegó el producto.</span>
+                    <span className="ml-auto bg-white px-2 py-1 rounded-full border border-green-200 shadow-sm text-green-600">
+                        {receivingItems.filter(i => i.received).length}/{receivingItems.length}
+                    </span>
+                </div>
+
+                {/* ENCABEZADOS DE TABLA */}
+                <div className="px-4 py-2 bg-stone-100 border-b flex gap-4 text-[10px] font-bold text-stone-500 uppercase tracking-wider">
+                    <div className="flex-1">Producto / Costo</div>
+                    <div className="w-32 text-center">Vencimiento</div>
+                    <div className="w-10 text-center">Recibido?</div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 bg-stone-50">
+                    <div className="space-y-3">
+                        {receivingItems.map((item, idx) => (
+                            <div key={item.uniqueKey} className={`p-3 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center gap-3 transition-all duration-200 ${item.received ? 'bg-white border-green-300 shadow-sm' : 'bg-stone-100 border-stone-200 opacity-75'}`}>
+                                <div className="flex items-center gap-3 flex-1">
+                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-colors ${item.received ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-500'}`}>{idx+1}</div>
+                                    <div>
+                                        <div className={`font-bold text-sm ${item.received ? 'text-stone-800' : 'text-stone-500'}`}>{item.name}</div>
+                                        <div className="text-xs text-stone-500">Costo: ${formatMoney(item.transactionPrice)}</div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                                    <div className="relative">
+                                        <input 
+                                            type="date" 
+                                            className={`p-2 border rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-green-200 transition-all ${!item.expirationDate && item.received ? 'border-red-400 bg-red-50 text-red-700' : 'border-stone-200 text-stone-700'}`}
+                                            value={item.expirationDate}
+                                            onChange={(e) => updateReceivingItem(idx, 'expirationDate', e.target.value)}
+                                            disabled={!item.received}
+                                        />
+                                        {!item.expirationDate && item.received && (
+                                            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[9px] px-2 py-1 rounded whitespace-nowrap arrow-down">
+                                                ¡Falta Fecha!
+                                            </div>
+                                        )}
+                                    </div>
+                                    <button 
+                                        onClick={() => updateReceivingItem(idx, 'received', !item.received)}
+                                        className={`p-2 rounded-lg transition-all active:scale-95 ${item.received ? 'bg-green-500 text-white shadow-lg shadow-green-200' : 'bg-stone-300 text-white hover:bg-stone-400'}`}
+                                        title="Marcar como recibido"
+                                    >
+                                        {item.received ? <CheckSquare className="w-6 h-6"/> : <Square className="w-6 h-6"/>}
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                <div className="p-4 border-t bg-white">
+                    <button onClick={handleProcessStockReceiptClick} className="w-full py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg hover:bg-green-700 transition-all active:scale-95 flex items-center justify-center gap-2">
+                        <Save className="w-5 h-5"/> Confirmar Recepción e Ingresar Stock
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
       <header className={`${view === 'purchases' ? 'bg-stone-700' : view === 'receipts' ? 'bg-stone-700' : 'bg-orange-500'} text-white p-4 shadow-md flex justify-between items-center z-10 shrink-0`}>
         <h1 className="font-bold text-lg flex items-center gap-2">
             {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'inventory' ? <Package className="w-5 h-5"/> : view === 'purchases' ? <Truck className="w-5 h-5"/> : view === 'receipts' ? <Receipt className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
@@ -1095,45 +1438,113 @@ export default function PosApp() {
         </h1>
       </header>
 
-      {/* Main */}
       <main className={`flex-1 overflow-hidden relative flex flex-col ${view !== 'pos' && view !== 'purchases' ? 'overflow-y-auto' : ''}`}>
         
-        {/* POS & PURCHASES */}
+        {/* POS & PURCHASES (STOCK ORDERS) */}
         {(view === 'pos' || view === 'purchases') && !showPurchaseHistory && (
           <div className="flex flex-col h-full relative">
-            {/* SubHeader */}
             <div className={`px-4 py-2 border-b flex justify-between items-center shrink-0 ${view === 'purchases' ? 'bg-stone-100' : (isImmediateSale ? 'bg-green-50' : 'bg-blue-50')}`}>
                  <div className="text-xs font-bold flex items-center gap-2 text-stone-700">
-                    {view === 'purchases' ? (editingTransactionId ? 'EDITANDO' : (purchaseMode === 'magazine' ? 'PDF' : 'MANUAL')) : (isImmediateSale ? 'VENTA INMEDIATA' : 'TOMAR ENCARGO')}
+                    {view === 'purchases' ? (editingTransactionId ? 'EDITANDO' : 'NUEVO PEDIDO') : (isImmediateSale ? 'VENTA INMEDIATA' : 'TOMAR ENCARGO')}
                  </div>
                  <div className="flex gap-2">
-                    {view === 'purchases' && !editingTransactionId && purchaseMode && <button onClick={() => setPurchaseMode(null)} className="text-xs bg-white border px-2 py-1 rounded">Volver</button>}
-                    {view === 'purchases' && !editingTransactionId && !purchaseMode && <button onClick={() => setShowPurchaseHistory(true)} className="text-xs bg-white border px-2 py-1 rounded flex gap-1"><History className="w-3 h-3"/> Historial</button>}
+                    {view === 'purchases' && stockOrderStep !== 'source' && !editingTransactionId && <button onClick={() => setStockOrderStep('source')} className="text-xs bg-white border px-2 py-1 rounded">Volver al Inicio</button>}
+                    {view === 'purchases' && !editingTransactionId && stockOrderStep === 'source' && <button onClick={() => setShowPurchaseHistory(true)} className="text-xs bg-white border px-2 py-1 rounded flex gap-1"><History className="w-3 h-3"/> Historial</button>}
                     {editingTransactionId && <button onClick={clearCart} className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded font-bold">Cancelar</button>}
                  </div>
             </div>
 
-            {view === 'purchases' && !purchaseMode && (
+            {view === 'purchases' && stockOrderStep === 'source' && !editingTransactionId && (
                 <div className="flex-1 p-6 flex flex-col justify-center items-center gap-4 bg-stone-50">
-                    <button onClick={() => setPurchaseMode('internet')} className="w-full max-w-sm p-6 bg-white rounded-2xl shadow hover:border-orange-500 border-2 border-transparent flex items-center gap-4"><div className="bg-orange-100 text-orange-600 p-4 rounded-full"><Globe className="w-8 h-8" /></div><div className="text-left"><h3 className="font-bold text-lg">Manual</h3><p className="text-sm text-stone-500">Ingreso uno a uno.</p></div></button>
-                    <button onClick={() => setPurchaseMode('magazine')} className="w-full max-w-sm p-6 bg-white rounded-2xl shadow hover:border-purple-500 border-2 border-transparent flex items-center gap-4"><div className="bg-purple-100 text-purple-600 p-4 rounded-full"><FileType className="w-8 h-8" /></div><div className="text-left"><h3 className="font-bold text-lg">PDF Pedido</h3><p className="text-sm text-stone-500">Carga automática.</p></div></button>
+                    <button onClick={() => { setStockSource('catalog'); setStockOrderStep('config'); }} className="w-full max-w-sm p-6 bg-white rounded-2xl shadow hover:border-purple-500 border-2 border-transparent flex items-center gap-4">
+                        <div className="bg-purple-100 text-purple-600 p-4 rounded-full"><BookOpen className="w-8 h-8" /></div>
+                        <div className="text-left"><h3 className="font-bold text-lg">Catálogo</h3><p className="text-sm text-stone-500">Pedido por revista/ciclo.</p></div>
+                    </button>
+                    <button onClick={() => { setStockSource('online'); setStockOrderStep('config'); }} className="w-full max-w-sm p-6 bg-white rounded-2xl shadow hover:border-orange-500 border-2 border-transparent flex items-center gap-4">
+                        <div className="bg-orange-100 text-orange-600 p-4 rounded-full"><Globe className="w-8 h-8" /></div>
+                        <div className="text-left"><h3 className="font-bold text-lg">Tienda Online</h3><p className="text-sm text-stone-500">Pedido web directo.</p></div>
+                    </button>
                 </div>
             )}
 
-            {/* Magazine Mode */}
-            {view === 'purchases' && purchaseMode === 'magazine' && (
-                <div className="flex-1 p-6 flex flex-col items-center bg-stone-50">
+            {view === 'purchases' && stockOrderStep === 'config' && !editingTransactionId && (
+                <div className="flex-1 p-6 flex flex-col items-center bg-stone-50 justify-center">
                     <div className="w-full max-w-md bg-white p-6 rounded-2xl shadow-sm space-y-6">
-                        <div className="text-center"><FileType className="w-16 h-16 text-purple-600 mx-auto mb-3"/><h2 className="text-xl font-bold">Cargar PDF</h2></div>
-                        <select className="w-full p-3 border rounded-xl" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}><option value="">Selecciona Ciclo</option>{cycles.map(c => <option key={c} value={c}>{c}</option>)}</select>
-                        <input type="file" accept=".pdf" onChange={(e) => setMagazineFile(e.target.files[0])} className="w-full border p-2 rounded-xl"/>
-                        <button onClick={handleProcessMagazinePDF} disabled={!selectedCycle || !magazineFile} className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold disabled:bg-stone-300">Procesar</button>
+                        <h3 className="font-bold text-xl text-center">Detalles del Pedido</h3>
+                        
+                        {stockSource === 'catalog' && (
+                            <div>
+                                <label className="text-xs font-bold text-stone-500 uppercase mb-1 block">Ciclo</label>
+                                <select className="w-full p-3 border rounded-xl bg-white" value={stockCycle} onChange={e => setStockCycle(e.target.value)}>
+                                    <option value="">Seleccionar Ciclo</option>
+                                    {cycles.map(c => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                            </div>
+                        )}
+
+                        {stockSource === 'online' && (
+                            <div>
+                                <label className="text-xs font-bold text-stone-500 uppercase mb-1 block">Tienda</label>
+                                <select className="w-full p-3 border rounded-xl bg-white" value={selectedOnlineStore} onChange={e => setSelectedOnlineStore(e.target.value)}>
+                                    <option value="">Seleccionar Tienda</option>
+                                    {ONLINE_STORES.map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+                        )}
+                        
+                        <div className="bg-stone-50 p-4 rounded-xl border">
+                            <div className="flex items-center gap-3 mb-3">
+                                <input type="checkbox" id="installments" className="w-5 h-5 text-purple-600" checked={isInstallments} onChange={e => setIsInstallments(e.target.checked)} />
+                                <label htmlFor="installments" className="font-bold text-stone-700">Pago en Cuotas</label>
+                            </div>
+                            {isInstallments && (
+                                <div>
+                                    <label className="text-xs font-bold text-stone-500 uppercase mb-1 block">Cantidad de Cuotas</label>
+                                    <select className="w-full p-2 border rounded-lg bg-white" value={installmentsCount} onChange={e => setInstallmentsCount(e.target.value)}>
+                                        {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
+                                    </select>
+                                </div>
+                            )}
+                        </div>
+
+                        <button onClick={() => { 
+                            if(stockSource === 'catalog' && !stockCycle) { triggerAlert("Falta Ciclo", "Selecciona un ciclo.", "error"); return; }
+                            if(stockSource === 'online' && !selectedOnlineStore) { triggerAlert("Falta Tienda", "Selecciona la tienda online.", "error"); return; }
+                            setStockOrderStep('method'); 
+                        }} className="w-full py-3 bg-stone-800 text-white rounded-xl font-bold">
+                            Continuar
+                        </button>
                     </div>
                 </div>
             )}
 
-            {/* Operation Screen */}
-            {((view === 'pos') || (view === 'purchases' && purchaseMode === 'internet')) && (
+            {view === 'purchases' && stockOrderStep === 'method' && !editingTransactionId && (
+                <div className="flex-1 p-6 flex flex-col justify-center items-center gap-4 bg-stone-50">
+                    <h3 className="font-bold text-stone-400 uppercase mb-4 text-sm">Selecciona Método de Ingreso</h3>
+                    <button onClick={() => { setPurchaseMode('internet'); setStockOrderStep('cart'); }} className="w-full max-w-sm p-6 bg-white rounded-2xl shadow hover:border-blue-500 border-2 border-transparent flex items-center gap-4">
+                        <div className="bg-blue-100 text-blue-600 p-4 rounded-full"><Pencil className="w-8 h-8" /></div>
+                        <div className="text-left"><h3 className="font-bold text-lg">Ingreso Manual</h3><p className="text-sm text-stone-500">Cargar uno a uno.</p></div>
+                    </button>
+                    <button onClick={() => { setPurchaseMode('magazine'); setStockOrderStep('pdf'); }} className="w-full max-w-sm p-6 bg-white rounded-2xl shadow hover:border-red-500 border-2 border-transparent flex items-center gap-4">
+                        <div className="bg-red-100 text-red-600 p-4 rounded-full"><FileType className="w-8 h-8" /></div>
+                        <div className="text-left"><h3 className="font-bold text-lg">Subir PDF</h3><p className="text-sm text-stone-500">Carga automática del pedido.</p></div>
+                    </button>
+                </div>
+            )}
+
+            {view === 'purchases' && stockOrderStep === 'pdf' && (
+                <div className="flex-1 p-6 flex flex-col items-center bg-stone-50 justify-center">
+                    <div className="w-full max-w-md bg-white p-6 rounded-2xl shadow-sm space-y-6 text-center">
+                        <FileType className="w-16 h-16 text-red-500 mx-auto"/>
+                        <h2 className="text-xl font-bold">Cargar PDF del Pedido</h2>
+                        <p className="text-sm text-stone-500">Sube el archivo PDF que descargaste de la web de Natura.</p>
+                        <input type="file" accept=".pdf" onChange={(e) => setMagazineFile(e.target.files[0])} className="w-full border p-2 rounded-xl"/>
+                        <button onClick={handleProcessMagazinePDF} disabled={!magazineFile} className="w-full py-3 bg-red-600 text-white rounded-xl font-bold disabled:bg-stone-300">Procesar Archivo</button>
+                    </div>
+                </div>
+            )}
+
+            {((view === 'pos') || (view === 'purchases' && stockOrderStep === 'cart')) && (
                 <>
                     <div className="p-4 bg-stone-50 shadow-sm space-y-3">
                         <div className="relative"><Search className="absolute left-3 top-3 w-5 h-5 text-stone-400"/><input className="w-full pl-10 p-2 rounded-lg border outline-none" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
@@ -1162,7 +1573,6 @@ export default function PosApp() {
                             ))}
                         </div>
                     </div>
-                    {/* Cart */}
                     {cart.length > 0 && (
                         <div className="fixed bottom-[76px] left-0 w-full z-20 flex flex-col shadow-2xl">
                             <div className={`rounded-t-3xl border-t p-4 ${editingTransactionId ? 'bg-amber-50' : 'bg-white'}`}>
@@ -1195,10 +1605,6 @@ export default function PosApp() {
                                                                 <span className="text-[9px] text-stone-400 font-bold uppercase mb-1">Costo</span>
                                                                 <input type="text" className="w-full h-9 pl-2 pr-2 text-right border border-stone-200 rounded-lg text-sm font-bold text-stone-700 outline-none focus:border-orange-500" value={item.transactionPrice === 0 ? '' : formatMoney(item.transactionPrice)} placeholder="0" onChange={(e) => updateTransactionPrice(item.id, parseInt(e.target.value.replace(/\D/g, ''), 10) || 0)} />
                                                             </div>
-                                                            <div className="flex flex-col w-28">
-                                                                <span className="text-[9px] text-stone-400 font-bold uppercase mb-1">Vencimiento</span>
-                                                                <input type="date" className={`w-full h-9 px-2 border rounded-lg text-xs font-medium outline-none focus:border-orange-500 transition-all ${!item.expirationDate ? 'border-red-300 bg-red-50 text-red-600' : 'border-stone-200 text-stone-700'}`} value={item.expirationDate || ''} onChange={(e) => updateExpirationDate(item.id, e.target.value)} />
-                                                            </div>
                                                         </>
                                                     ) : (
                                                         <div className="flex flex-col items-end flex-1">
@@ -1225,10 +1631,15 @@ export default function PosApp() {
                                         </>
                                     ) : (
                                         <div className="flex flex-1 gap-2">
-                                            <select className="flex-1 h-10 border rounded-xl px-2 text-sm bg-white" value={selectedSupplier} onChange={e => setSelectedSupplier(e.target.value)}>
-                                                <option value="">Seleccionar Proveedor</option>
-                                                {SUPPLIERS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                                            </select>
+                                            <div className="text-xs font-bold text-stone-500 flex items-center gap-2 bg-stone-100 px-3 py-2 rounded-xl">
+                                                {stockSource === 'catalog' ? <BookOpen className="w-4 h-4"/> : <Globe className="w-4 h-4"/>}
+                                                {stockSource === 'catalog' ? `Catálogo ${stockCycle}` : `${selectedOnlineStore} Online`}
+                                            </div>
+                                            {isInstallments && (
+                                                <div className="text-xs font-bold text-purple-600 flex items-center gap-2 bg-purple-50 px-3 py-2 rounded-xl border border-purple-100">
+                                                    <CreditCard className="w-4 h-4"/> {installmentsCount} Cuotas
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -1243,7 +1654,7 @@ export default function PosApp() {
                                 <div className="flex gap-2">
                                     {view === 'pos' && <button onClick={() => setShowPreTicket(true)} className="w-12 h-12 bg-green-600 rounded-xl flex items-center justify-center text-white"><MessageCircle className="w-5 h-5"/></button>}
                                     <button onClick={handleTransaction} className="flex-1 h-12 bg-stone-800 text-white rounded-xl font-bold flex justify-between px-6 items-center">
-                                        <span>{view === 'pos' ? (isImmediateSale ? 'Confirmar Venta' : 'Guardar Encargo') : 'Confirmar'}</span>
+                                        <span>{view === 'pos' ? (isImmediateSale ? 'Confirmar Venta' : 'Guardar Encargo') : 'Confirmar Pedido'}</span>
                                         <span>${formatMoney(cartTotal)}</span>
                                     </button>
                                 </div>
@@ -1311,7 +1722,6 @@ export default function PosApp() {
                                     </div>
                                 </div>
                                 <div className="flex gap-2 pt-2 border-t">
-                                    {/* FIX: PREVENIR PROPAGACIÓN DE CLIC Y ASEGURAR ID */}
                                     <button 
                                         onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} 
                                         className="py-2 px-3 bg-red-50 text-red-600 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-red-100 transition-colors"
@@ -1319,7 +1729,7 @@ export default function PosApp() {
                                         <Undo2 className="w-4 h-4"/> No Retiró
                                     </button>
                                     <button 
-                                        onClick={(e) => { e.stopPropagation(); confirmTransitDelivery(t); }} 
+                                        onClick={(e) => { e.stopPropagation(); handleConfirmDeliveryClick(t); }} 
                                         className="flex-1 py-2 bg-stone-800 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1 hover:bg-stone-900 transition-colors"
                                     >
                                         <Check className="w-4 h-4"/> Confirmar Entrega
@@ -1391,23 +1801,38 @@ export default function PosApp() {
             </div>
         )}
 
-        {/* PURCHASE HISTORY */}
+        {/* PURCHASE HISTORY (REGISTRO PEDIDOS STOCK) */}
         {view === 'purchases' && showPurchaseHistory && (
             <div className="flex flex-col h-full">
                 <div className="p-4 border-b flex justify-between items-center"><button onClick={() => setShowPurchaseHistory(false)} className="flex items-center text-stone-600 gap-1"><ChevronLeft className="w-4 h-4"/> Volver</button></div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                     {filteredPurchases.map(t => (
-                        <div key={t.id} onClick={() => setReceiptDetails(t)} className="p-4 bg-white rounded-xl shadow-sm border cursor-pointer hover:bg-stone-50 transition-colors">
-                            <div className="flex justify-between mb-2">
-                                <div className="font-bold text-lg text-stone-800">${formatMoney(t.total)}</div>
-                                <span className="text-[10px] font-bold bg-purple-100 text-purple-700 px-2 py-1 rounded uppercase">{t.origin || 'Manual'}</span>
-                            </div>
-                            <div className="text-xs text-stone-500 flex justify-between mb-2">
-                                <span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {new Date(t.date.seconds*1000).toLocaleDateString()}</span>
-                                <span className="font-medium text-stone-700">{getSupplierName(t.clientId)}</span>
+                        <div key={t.id} className={`p-4 bg-white rounded-xl shadow-sm border cursor-pointer hover:bg-stone-50 transition-colors border-l-4 ${t.saleStatus === 'received' ? 'border-l-green-500' : 'border-l-orange-500'}`}>
+                            <div onClick={() => setReceiptDetails(t)}>
+                                <div className="flex justify-between mb-2">
+                                    <div className="font-bold text-lg text-stone-800">${formatMoney(t.total)}</div>
+                                    {t.saleStatus === 'received' ? (
+                                        <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-1 rounded uppercase">Recibido</span>
+                                    ) : (
+                                        <span className="text-[10px] font-bold bg-orange-100 text-orange-700 px-2 py-1 rounded uppercase">En Camino</span>
+                                    )}
+                                </div>
+                                <div className="text-xs text-stone-500 flex justify-between mb-2">
+                                    <span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {new Date(t.date.seconds*1000).toLocaleDateString()}</span>
+                                    <span className="font-medium text-stone-700">
+                                        {t.purchaseType === 'catalog' ? `Catálogo ${t.cycle}` : (t.onlineStore ? `${t.onlineStore} Online` : 'Web')}
+                                    </span>
+                                </div>
                             </div>
                             <div className="flex gap-2 justify-end pt-2 border-t border-stone-100" onClick={(e) => e.stopPropagation()}>
-                                <button onClick={() => handleEditPurchase(t)} className="p-2 bg-amber-50 text-amber-600 rounded hover:bg-amber-100"><Pencil className="w-4 h-4"/></button>
+                                {t.saleStatus !== 'received' && (
+                                    <>
+                                        <button onClick={() => handleEditPurchase(t)} className="p-2 bg-amber-50 text-amber-600 rounded hover:bg-amber-100"><Pencil className="w-4 h-4"/></button>
+                                        <button onClick={() => handleReceiveStockClick(t)} className="flex-1 bg-green-600 text-white rounded font-bold text-xs flex items-center justify-center gap-1 hover:bg-green-700">
+                                            <PackageCheck className="w-4 h-4"/> Recibir Mercadería
+                                        </button>
+                                    </>
+                                )}
                                 <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-600 rounded hover:bg-red-100"><Trash2 className="w-4 h-4"/></button>
                             </div>
                         </div>
@@ -1520,266 +1945,12 @@ export default function PosApp() {
 
       </main>
 
-      {/* --- MODALS --- */}
-
-      {/* NUEVO: Modal Por Vencer */}
-      {showExpiringModal && (
-        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
-                <div className="p-4 border-b flex justify-between items-center bg-red-50">
-                    <h2 className="font-bold text-lg text-red-700 flex items-center gap-2"><CalendarX className="w-5 h-5"/> Por Vencer (Top 10)</h2>
-                    <button onClick={() => setShowExpiringModal(false)}><X className="w-6 h-6 text-red-400"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4">
-                    {expiringProducts.length === 0 ? (
-                        <div className="text-center text-stone-400 py-10">No hay productos próximos a vencer.</div>
-                    ) : (
-                        <div className="space-y-3">
-                            {expiringProducts.map((b, i) => (
-                                <div key={i} className="p-3 bg-white border border-red-100 rounded-xl shadow-sm">
-                                    <div className="font-bold text-stone-800 mb-1">{b.productName}</div>
-                                    <div className="flex justify-between text-xs text-stone-500 mb-2">
-                                        <span>Vence: <span className="font-bold text-red-600">{new Date(b.expirationDate).toLocaleDateString()}</span></span>
-                                        <span>{b.remainingQty} un.</span>
-                                    </div>
-                                    <div className="text-xs text-stone-400 bg-stone-50 p-2 rounded flex justify-between">
-                                        <span>Dinero en riesgo:</span>
-                                        <span className="font-bold text-stone-700">${formatMoney(b.remainingQty * b.cost)}</span>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
-      {/* NUEVO: Modal Por Comprar (Pendientes) */}
-      {showPendingOrdersModal && (
-        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
-                <div className="p-4 border-b flex justify-between items-center bg-blue-50">
-                    <h2 className="font-bold text-lg text-blue-700 flex items-center gap-2"><ShoppingBag className="w-5 h-5"/> Unidades por Comprar</h2>
-                    <button onClick={() => setShowPendingOrdersModal(false)}><X className="w-6 h-6 text-blue-400"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                    {Object.keys(pendingOrdersData).length === 0 ? (
-                        <div className="text-center text-stone-400 py-10">No hay pedidos pendientes.</div>
-                    ) : (
-                        Object.entries(pendingOrdersData).map(([brand, items]) => (
-                            <div key={brand}>
-                                <h3 className="font-bold text-stone-400 text-xs uppercase mb-2 border-b pb-1">{brand}</h3>
-                                <div className="space-y-2">
-                                    {items.map((item, idx) => (
-                                        <div key={idx} className="flex justify-between items-center text-sm p-2 bg-stone-50 rounded-lg">
-                                            <span className="font-medium text-stone-700">{item.name}</span>
-                                            <span className="font-bold bg-white px-2 py-1 rounded border border-stone-200 text-stone-600">{item.qty} un.</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        ))
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
-      {/* NUEVO: MODAL HISTORIAL (KARDEX) - Z-Index 80 */}
-      {isHistoryModalOpen && viewingHistoryProduct && (
-        <div className="fixed inset-0 bg-black/50 z-[80] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col">
-                <div className="p-4 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl">
-                    <div>
-                        <h2 className="text-lg font-bold text-stone-800">Historial: {viewingHistoryProduct.name}</h2>
-                        <p className="text-xs text-stone-500">Ordenado por fecha (Reciente primero)</p>
-                    </div>
-                    <button onClick={() => setIsHistoryModalOpen(false)}><X className="w-6 h-6 text-stone-400"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4">
-                    {loadingHistory ? <div className="text-center py-10 text-stone-400">Cargando...</div> : (
-                        <div className="border rounded-xl overflow-hidden text-xs">
-                            <table className="w-full text-left">
-                                <thead className="bg-stone-100 text-stone-500 font-bold">
-                                    <tr><th className="p-3">Fecha/Hora</th><th className="p-3">Mov.</th><th className="p-3 text-right">Cant.</th><th className="p-3 text-right">Precio</th></tr>
-                                </thead>
-                                <tbody className="divide-y divide-stone-50">
-                                    {productHistory.length === 0 && <tr><td colSpan="4" className="p-4 text-center text-stone-400">Sin movimientos.</td></tr>}
-                                    {productHistory.map((mov) => (
-                                        <tr key={mov.id} className="hover:bg-stone-50">
-                                            <td className="p-3 text-stone-500">{formatDateWithTime(mov.date / 1000)}</td>
-                                            <td className="p-3"><span className={`font-bold ${mov.type === 'IN' ? 'text-green-600' : 'text-red-600'}`}>{mov.type === 'IN' ? 'ENTRADA' : 'VENTA'}</span></td>
-                                            <td className="p-3 text-right font-bold">{mov.qty}</td>
-                                            <td className="p-3 text-right text-stone-600"><div>${formatMoney(mov.price)}</div><div className="text-[9px] text-stone-400 uppercase">{mov.type === 'IN' ? 'Costo' : 'Venta'}</div></td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
-      {/* MODAL RECIBO - Z-Index 70 */}
-      {receiptDetails && (
-        <div className="fixed inset-0 bg-black/60 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
-            <div className="bg-white w-full max-w-md h-[80vh] sm:h-auto sm:max-h-[85vh] sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
-                <div className="p-5 border-b flex justify-between items-center bg-stone-50">
-                    <h2 className="font-bold text-lg flex items-center gap-2"><Receipt className="w-5 h-5"/> Detalle {receiptDetails.type === 'purchase' ? 'Recepción' : 'Venta'}</h2>
-                    <button onClick={() => setReceiptDetails(null)} className="bg-white p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-5">
-                    <div className="text-center mb-6">
-                        <div className="text-sm text-stone-500 mb-1">{receiptDetails.type === 'purchase' ? getSupplierName(receiptDetails.clientId) : getClientName(receiptDetails.clientId)}</div>
-                        <div className="text-4xl font-black">${formatMoney(receiptDetails.total)}</div>
-                    </div>
-                    {/* INFO FINANCIERA (Solo venta entregada) */}
-                    {receiptDetails.type === 'sale' && receiptDetails.saleStatus === 'completed' && receiptDetails.totalCost > 0 && (
-                        <div className="bg-stone-50 p-4 rounded-xl border mb-4 space-y-2">
-                            <div className="flex justify-between text-xs text-stone-500"><span>Costo Mercadería (FIFO Exacto)</span><span>${formatMoney(receiptDetails.totalCost)}</span></div>
-                            <div className="flex justify-between font-bold text-stone-800 text-sm pt-2 border-t"><span>Margen Ganancia</span><span className="text-green-600">+${formatMoney(receiptDetails.margin)}</span></div>
-                        </div>
-                    )}
-                    <div className="space-y-3">
-                        {receiptDetails.items.map((item, idx) => (
-                            <div key={idx} className="py-2 border-b border-dashed last:border-0">
-                                <div className="flex justify-between">
-                                    <div className="text-sm"><span className="font-bold">{item.qty}x</span> {item.name}</div>
-                                    <div className="font-bold">${formatMoney(item.transactionPrice * item.qty)}</div>
-                                </div>
-                                {receiptDetails.type === 'purchase' ? (
-                                     <div className="text-[10px] text-stone-400">Costo unitario: ${formatMoney(item.transactionPrice)}</div>
-                                ) : (
-                                    /* Desglose FIFO solo en ventas */
-                                    item.fifoDetails && item.fifoDetails.map((detail, dIdx) => (
-                                        <div key={dIdx} className="text-[10px] text-stone-500 pl-2 mt-1">
-                                        - {detail.qty} un. del {formatDateSimple(detail.date)} a ${formatMoney(detail.cost)}
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                    {/* Si es pendiente, permitimos entregar solo si hay stock (validado en el handler) */}
-                    {receiptDetails.saleStatus === 'pending' && (
-                        <button 
-                            onClick={() => handleDeliverOrder(receiptDetails)} 
-                            className={`w-full mt-6 font-bold py-3 rounded-xl text-white ${getOrderStatus(receiptDetails) === 'ready' ? 'bg-green-600' : 'bg-stone-300 cursor-not-allowed'}`}
-                            disabled={getOrderStatus(receiptDetails) !== 'ready'}
-                        >
-                            {getOrderStatus(receiptDetails) === 'ready' ? 'Entregar Ahora' : 'Falta Stock (Esperar)'}
-                        </button>
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
-      {/* Otros modales (Product, Category, Client, Supplier, etc) */}
-      {isProductModalOpen && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md">
-            <h2 className="text-xl font-bold mb-4">{editingProduct ? 'Editar' : 'Nuevo'} Producto</h2>
-            <form onSubmit={handleSaveProduct} className="space-y-4">
-              
-              {/* --- NUEVO: INPUT DE IMAGEN OBLIGATORIO --- */}
-              <div className="border-2 border-dashed border-stone-300 rounded-xl p-4 text-center relative hover:bg-stone-50 transition-colors">
-                  <input 
-                      type="file" 
-                      name="image" 
-                      accept="image/*"
-                      // Si NO hay producto en edición (es nuevo), es REQUIRED. Si hay producto, es opcional (salvo que se quiera cambiar)
-                      required={!editingProduct?.imageUrl}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <div className="flex flex-col items-center gap-2 pointer-events-none">
-                      <ImageIcon className="w-8 h-8 text-stone-400"/>
-                      <span className="text-sm font-bold text-stone-500">
-                          {editingProduct?.imageUrl ? "Cambiar Imagen (Opcional)" : "Subir Imagen (Obligatorio)"}
-                      </span>
-                  </div>
-              </div>
-              {editingProduct?.imageUrl && (
-                  <div className="text-xs text-center text-green-600 font-bold flex items-center justify-center gap-1">
-                      <CheckCircle2 className="w-3 h-3"/> Imagen actual registrada
-                  </div>
-              )}
-              {/* ------------------------------------------- */}
-
-              <input name="name" required placeholder="Nombre" defaultValue={editingProduct?.name} className="w-full p-3 border rounded-xl" />
-              
-              <select name="brand" required defaultValue={editingProduct?.brand} className="w-full p-3 border rounded-xl bg-white">
-                  <option value="">Seleccionar Marca</option>
-                  {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
-              </select>
-
-              <input name="price" required placeholder="Precio" value={productPriceInput} onChange={e => setProductPriceInput(e.target.value)} className="w-full p-3 border rounded-xl" />
-              <select name="category" required defaultValue={editingProduct?.category} className="w-full p-3 border rounded-xl"><option value="">Categoría</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-              <button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button>
-              <button type="button" onClick={() => setIsProductModalOpen(false)} className="w-full py-3 bg-stone-100 rounded-xl">Cancelar</button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {isCategoryModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nueva Categoría</h2><form onSubmit={e => { e.preventDefault(); simpleSave('categories', {name: new FormData(e.currentTarget).get('name')}, setIsCategoryModalOpen); }}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsCategoryModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
-      
-      {isCycleModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Ciclo</h2><form onSubmit={e => { e.preventDefault(); simpleSave('cycles', {name: new FormData(e.currentTarget).get('name')}, setIsCycleModalOpen); }}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsCycleModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
-
-      {isClientModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Cliente</h2><form onSubmit={handleSaveClient}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><input name="phone" className="w-full p-3 border rounded-xl mb-4" placeholder="Teléfono"/><button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsClientModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
-
-      {isSupplierModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Proveedor</h2><form onSubmit={handleSaveSupplier}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-stone-800 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsSupplierModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
-
-      {/* MODAL ENTREGA / DESPACHO (ACTUALIZADO) - Z-Index 80 */}
-      {isDeliveryModalOpen && deliveryTransaction && (
-        <div className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4">
-            <div className="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl">
-                <h2 className="text-xl font-bold text-center mb-4">Preparar Entrega</h2>
-                <div className="text-3xl font-black text-center mb-6">${formatMoney(deliveryTransaction.total)}</div>
-                
-                {/* SELECCIÓN DE REPARTIDOR */}
-                <div className="mb-6">
-                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">¿Quién entrega?</label>
-                    <div className="space-y-2">
-                        {COURIERS.map(courier => (
-                            <button 
-                                key={courier} 
-                                onClick={() => setSelectedCourier(courier)}
-                                className={`w-full p-3 rounded-xl font-bold text-left flex items-center gap-3 border-2 transition-all ${selectedCourier === courier ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-stone-100 bg-white text-stone-600'}`}
-                            >
-                                {courier === 'Yo (Directo)' ? <CheckCircle2 className="w-5 h-5"/> : <Bike className="w-5 h-5"/>}
-                                {courier}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                {/* MEDIO DE PAGO (Intención) */}
-                <div className="mb-6">
-                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">Medio de Pago (Estimado)</label>
-                    <div className="grid grid-cols-2 gap-3">
-                        <button onClick={() => setDeliveryPaymentMethod('Efectivo')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Efectivo' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Efectivo</button>
-                        <button onClick={() => setDeliveryPaymentMethod('Transferencia')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Transferencia' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Transf.</button>
-                    </div>
-                </div>
-
-                <button onClick={startDeliveryProcess} className={`w-full py-3 text-white font-bold rounded-xl ${selectedCourier === 'Yo (Directo)' ? 'bg-green-600' : 'bg-stone-800'}`}>
-                    {selectedCourier === 'Yo (Directo)' ? 'Confirmar y Cerrar Venta' : 'Enviar a Reparto (Descontar Stock)'}
-                </button>
-                <button onClick={() => setIsDeliveryModalOpen(false)} className="w-full mt-2 py-3 text-stone-400">Cancelar</button>
-            </div>
-        </div>
-      )}
-
       {/* Bottom Nav */}
       <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 pb-safe-bottom z-30 shadow-lg">
         <NavButton icon={<LayoutDashboard />} label="Reportes" active={view === 'reports'} onClick={() => setView('reports')} />
         <NavButton icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => setView('pos')} />
-        <NavButton icon={<Truck />} label="Recepción" active={view === 'purchases'} onClick={() => { setView('purchases'); setShowPurchaseHistory(false); setPurchaseMode(null); }} />
-        <NavButton icon={<Receipt />} label="Pedidos" active={view === 'receipts'} onClick={() => setView('receipts')} />
+        <NavButton icon={<Truck />} label="Pedidos" active={view === 'purchases'} onClick={() => { setView('purchases'); setShowPurchaseHistory(false); setPurchaseMode(null); }} />
+        <NavButton icon={<Receipt />} label="Pedidos Clientes" active={view === 'receipts'} onClick={() => setView('receipts')} />
         <NavButton icon={<Package />} label="Stock" active={view === 'inventory'} onClick={() => setView('inventory')} />
       </nav>
     </div>
