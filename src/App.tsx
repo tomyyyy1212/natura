@@ -188,6 +188,15 @@ export default function PosApp() {
   const [showStockAlertModal, setShowStockAlertModal] = useState(false); 
   const [showCatalogModal, setShowCatalogModal] = useState(false); 
   const [isCycleModalOpen, setIsCycleModalOpen] = useState(false);
+
+  // --- HELPER PARA ID CORTO ---
+  const generateShortId = () => {
+  const number = Math.floor(100 + Math.random() * 900); // 3 dígitos
+  const letters = String.fromCharCode(65 + Math.floor(Math.random() * 26)) +
+                  String.fromCharCode(65 + Math.floor(Math.random() * 26)) +
+                  String.fromCharCode(65 + Math.floor(Math.random() * 26)); // 3 letras
+  return `${number}-${letters}`;
+};
   
   // NUEVOS MODALES REPORTES
   const [showExpiringModal, setShowExpiringModal] = useState(false);
@@ -421,23 +430,48 @@ export default function PosApp() {
       return schedule;
   };
 
-  // --- SAVE CHECKOUT TRANSACTION ---
+// --- SAVE CHECKOUT TRANSACTION (CORREGIDO) ---
   const handleConfirmCheckout = async () => {
     if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
     
-    // Validar Stock si es Inmediato
+    // CALCULO PRELIMINAR DE PAGOS
+    const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
+    
+    // Definir lo pagado inicialmente
+    let initialPaid = 0;
+    if (paymentPlanType === 'deposit') {
+        initialPaid = Number(checkoutData.downPayment);
+    } else if (paymentPlanType === 'full') {
+        // En tu lógica actual 'full' es deuda total a finanzas, 
+        // PERO si es entrega inmediata, asumimos que 'full' significa que paga todo YA.
+        // Si quieres que 'full' sea deuda, entonces NO puede ser entrega inmediata.
+        // Asumiremos aquí que si es inmediata, el usuario DEBE haber pagado.
+        // Para simplificar: Si es inmediata, validaremos el balance abajo.
+        initialPaid = 0; 
+    }
+
+    const balance = total - initialPaid;
+
+    // --- VALIDACIÓN CRÍTICA: BLOQUEO DE ENTREGA INMEDIATA ---
     if (deliveryType === 'immediate') {
+        // Validación Stock
         const missing = cart.filter(item => {
             const product = products.find(p => p.id === item.id);
             return !product || product.stock < item.qty;
         });
         if (missing.length > 0) {
-            triggerAlert("Sin Stock", "No puedes entregar inmediata. Hay productos sin stock.", "error");
+            triggerAlert("Sin Stock", "No hay stock suficiente para entrega inmediata.", "error");
             return;
+        }
+
+        // Validación Deuda (NUEVA): Si no es cuotas y debe plata, NO sale mercadería.
+        if (paymentPlanType !== 'installments' && balance > 0) {
+             triggerAlert("Imposible Entregar", "No puedes entregar inmediato si hay saldo pendiente (salvo ventas en cuotas). Registra el pago total o cambia a 'Por Encargo'.", "error");
+             return;
         }
     }
 
-    // Validación de Medio de Pago: Solo si es Abono (Deposito) con monto > 0
+    // Validación medio de pago abono
     if (paymentPlanType === 'deposit' && checkoutData.downPayment > 0 && !checkoutData.paymentMethod) {
         triggerAlert("Falta Pago", "Selecciona el medio de pago para el abono.", "error");
         return;
@@ -449,10 +483,10 @@ export default function PosApp() {
     try {
         const batch = writeBatch(db);
         const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
+        const displayId = generateShortId(); // <--- NUEVO ID CORTO
         const now = new Date();
-        const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
 
-        // Descuento de stock y FIFO solo si es Entrega Inmediata
+        // FIFO y Stock
         let transactionFIFO = 0;
         let finalItems = [...cart];
 
@@ -470,37 +504,27 @@ export default function PosApp() {
         const margin = total - transactionFIFO;
         const paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
         
-        // Calcular estado de pago inicial CORREGIDO
-        let initialPaid = 0;
-        if (paymentPlanType === 'deposit') {
-            initialPaid = Number(checkoutData.downPayment);
-        }
-        // Para 'full' (Pago Completo) y 'installments', initialPaid es 0.
-        
-        const balance = total - initialPaid;
         const paymentStatus = balance <= 0 ? 'paid' : (initialPaid > 0 ? 'partial' : 'pending');
 
         const transactionData = {
             id: newTransId, 
+            displayId: displayId, // <--- GUARDAMOS ID VISIBLE
             type: 'sale',
             items: finalItems,
             total: total,
             clientId: selectedClient,
             date: { seconds: now.getTime() / 1000 },
             
-            // Logica nueva de pago
             paymentPlanType, 
             paymentSchedule, 
-            balance,         
-            paymentStatus,   
+            balance,          
+            paymentStatus,    
             
-            // Logica antigua/hibrida (Solo guardamos metodo si hubo pago inicial real)
             paymentMethod: (paymentPlanType === 'deposit') ? checkoutData.paymentMethod : null, 
             totalCost: transactionFIFO,
             margin: margin,
             marginPercent: (total > 0) ? (margin/total)*100 : 0,
             
-            // Estado de entrega
             saleStatus: deliveryType === 'immediate' ? 'completed' : 'pending',
             origin: 'POS',
             courier: deliveryType === 'immediate' ? 'Yo (Directo)' : null,
@@ -513,7 +537,7 @@ export default function PosApp() {
         
         clearCart();
         setIsCheckoutModalOpen(false);
-        triggerAlert("Éxito", deliveryType === 'immediate' ? "Venta cerrada." : "Pedido registrado en Finanzas.", "success");
+        triggerAlert("Éxito", `Venta ${displayId} registrada.`, "success");
 
     } catch (error) {
         console.error(error);
@@ -1890,106 +1914,87 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- FINANZAS: MODAL DE PAGO --- */}
+{/* --- FINANZAS: MODAL DE PAGO --- */}
       {paymentModalOpen && selectedPaymentTx && (
           <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
+                  {/* ... Header del modal (color verde) ... */}
                   <div className="p-5 bg-emerald-600 text-white relative overflow-hidden">
-                      <div className="relative z-10">
-                          <h2 className="font-bold text-xl">Registrar Pago</h2>
-                          <div className="text-sm opacity-90 font-medium">{getClientName(selectedPaymentTx.clientId)}</div>
-                      </div>
-                      <DollarSign className="absolute -right-4 -bottom-8 w-32 h-32 text-emerald-500 opacity-50 rotate-12"/>
+                      {/* ... contenido del header ... */}
                   </div>
                   
                   <div className="flex-1 overflow-y-auto p-5">
                       <div className="mb-6 space-y-3">
-                          {(selectedPaymentTx.paymentSchedule || []).map((item, idx) => (
+                          
+                          {/* AQUI PEGAS EL CÓDIGO NUEVO: */}
+                          {(selectedPaymentTx.paymentSchedule || []).map((item, idx) => {
+                            // Calculamos progreso visual
+                            const paidSoFar = item.paidAmount || 0;
+                            const progress = Math.min(100, (paidSoFar / item.amount) * 100);
+                            const isFullyPaid = paidSoFar >= item.amount;
+
+                            return (
                               <div 
                                   key={idx} 
                                   onClick={() => {
-                                      if (item.status === 'paid') return;
+                                      if (isFullyPaid) return; // Si ya está pagado total, no dejar clickear
                                       setSelectedPaymentIndex(idx);
-                                      setPaymentAmountInput(item.amount);
+                                      // Sugerimos pagar LO QUE FALTA, no el total original
+                                      setPaymentAmountInput(item.amount - paidSoFar);
                                   }}
-                                  className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex justify-between items-center group 
-                                      ${item.status === 'paid' 
+                                  className={`p-4 rounded-xl border-2 transition-all cursor-pointer relative overflow-hidden group
+                                      ${isFullyPaid 
                                           ? 'bg-emerald-50 border-emerald-100 opacity-80 cursor-default' 
                                           : selectedPaymentIndex === idx 
-                                              ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-100' 
+                                              ? 'bg-white border-emerald-500 ring-2 ring-emerald-100' 
                                               : 'bg-white border-stone-100 hover:border-emerald-200'
                                       }`}
                               >
-                                  <div>
-                                      <div className="font-bold text-sm text-stone-800">
-                                          {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : (item.type === 'total' ? 'Pago Total' : 'Saldo Pendiente')}
+                                  {/* Barra de progreso de fondo */}
+                                  {!isFullyPaid && paidSoFar > 0 && (
+                                      <div className="absolute left-0 top-0 bottom-0 bg-emerald-100 transition-all duration-500" style={{width: `${progress}%`, zIndex: 0}}></div>
+                                  )}
+
+                                  <div className="relative z-10 flex justify-between items-center">
+                                      <div>
+                                          <div className="font-bold text-sm text-stone-800">
+                                              {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : 'Saldo Pendiente'}
+                                          </div>
+                                          <div className="text-xs text-stone-500 mt-0.5">
+                                              {item.date ? new Date(item.date * 1000).toLocaleDateString() : 'Fecha abierta'}
+                                          </div>
+                                          {/* Mostrar historial chiquito si hay abonos parciales */}
+                                          {item.paymentHistory && item.paymentHistory.length > 0 && (
+                                              <div className="text-[9px] text-stone-400 mt-1">
+                                                  {item.paymentHistory.length} abonos registrados
+                                              </div>
+                                          )}
                                       </div>
-                                      <div className="text-xs text-stone-500 mt-0.5">
-                                          {item.date ? new Date(item.date * 1000).toLocaleDateString() : 'Fecha abierta'}
+                                      <div className="text-right">
+                                          <div className={`font-black ${isFullyPaid ? 'text-emerald-700' : 'text-stone-800'}`}>
+                                              ${formatMoney(item.amount)}
+                                          </div>
+                                          {/* Mostrar cuánto lleva pagado si es parcial */}
+                                          {!isFullyPaid && paidSoFar > 0 && (
+                                              <div className="text-[10px] font-bold text-emerald-600">
+                                                  Pagado: ${formatMoney(paidSoFar)}
+                                              </div>
+                                          )}
+                                          <div className={`text-[9px] uppercase font-bold mt-1 px-2 py-0.5 rounded-full inline-block ${isFullyPaid ? 'bg-emerald-200 text-emerald-800' : 'bg-stone-100 text-stone-400'}`}>
+                                              {isFullyPaid ? 'Pagado' : paidSoFar > 0 ? 'Parcial' : 'Pendiente'}
+                                          </div>
                                       </div>
-                                      {/* Mostrar link a comprobante si existe */}
-                                      {item.receiptUrl && (
-                                          <a href={item.receiptUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[10px] text-blue-500 flex items-center gap-1 mt-1 hover:underline">
-                                              <ExternalLink className="w-3 h-3"/> Ver Comprobante
-                                          </a>
-                                      )}
-                                  </div>
-                                  <div className="text-right">
-                                      <div className={`font-black ${item.status === 'paid' ? 'text-emerald-700' : 'text-stone-800'}`}>${formatMoney(item.amount)}</div>
-                                      <div className={`text-[9px] uppercase font-bold mt-1 px-2 py-0.5 rounded-full inline-block ${item.status === 'paid' ? 'bg-emerald-200 text-emerald-800' : 'bg-stone-100 text-stone-400'}`}>{item.status === 'paid' ? 'Pagado' : 'Pendiente'}</div>
                                   </div>
                               </div>
-                          ))}
+                            );
+                        })}
+                        {/* FIN DEL CÓDIGO PEGADO */}
+
                       </div>
 
-                      {selectedPaymentIndex !== null && (
-                          <div className="bg-stone-50 p-5 rounded-2xl border border-stone-100 animate-in slide-in-from-bottom-4 duration-300">
-                              <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Monto a Pagar</label>
-                              <div className="relative mb-4">
-                                  <span className="absolute left-4 top-3.5 text-stone-400 font-bold text-lg">$</span>
-                                  <input 
-                                      type="number" 
-                                      className="w-full pl-8 pr-4 py-3 border border-stone-200 rounded-xl text-2xl font-black text-stone-800 text-center focus:border-emerald-500 outline-none transition-colors" 
-                                      value={paymentAmountInput}
-                                      onChange={e => setPaymentAmountInput(e.target.value)}
-                                      placeholder="0"
-                                  />
-                              </div>
-                              
-                              <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago</label>
-                              <select className="w-full p-3 border border-stone-200 rounded-xl mb-4 bg-white text-sm font-bold text-stone-700 outline-none focus:border-emerald-500" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
-                                  <option value="Efectivo">Efectivo</option>
-                                  <option value="Transferencia">Transferencia</option>
-                                  <option value="Debito">Débito</option>
-                              </select>
-
-                              <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-4 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
-                                  <input 
-                                      type="file" 
-                                      accept="image/*"
-                                      onChange={(e) => setPaymentReceiptFile(e.target.files[0])}
-                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                  />
-                                  <Upload className={`w-6 h-6 mx-auto mb-2 ${paymentReceiptFile ? 'text-emerald-500' : ''}`}/>
-                                  <span className={`text-xs font-bold block ${paymentReceiptFile ? 'text-emerald-600' : ''}`}>{paymentReceiptFile ? "Archivo Seleccionado" : "Subir Comprobante"}</span>
-                                  <span className="text-[10px] opacity-70">{paymentReceiptFile ? paymentReceiptFile.name : "(Opcional)"}</span>
-                              </div>
-                          </div>
-                      )}
+                      {/* ... Inputs para ingresar monto (selectedPaymentIndex !== null) ... */}
                   </div>
-
-                  <div className="p-5 border-t bg-white flex flex-col gap-3">
-                      {selectedPaymentIndex !== null ? (
-                          <button onClick={handleRegisterPayment} className="w-full py-3.5 bg-emerald-600 text-white font-bold rounded-xl shadow-lg shadow-emerald-200 active:scale-[0.98] transition-all">
-                              Confirmar Pago
-                          </button>
-                      ) : (
-                          <div className="text-center text-xs text-stone-400 font-medium py-2">Selecciona una cuota para pagar</div>
-                      )}
-                      <button onClick={() => { setPaymentModalOpen(false); setSelectedPaymentTx(null); setPaymentReceiptFile(null); }} className="w-full py-3 text-stone-400 font-bold text-sm hover:text-stone-600 transition-colors">
-                          Cancelar
-                      </button>
-                  </div>
+                  {/* ... Botones de acción ... */}
               </div>
           </div>
       )}
@@ -2363,3 +2368,4 @@ export default function PosApp() {
 function NavButton({ icon, label, active, onClick }) {
     return <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${active ? 'text-orange-600 bg-orange-50 scale-105' : 'text-stone-400 hover:bg-stone-50'}`}>{React.cloneElement(icon, { className: `w-6 h-6 ${active ? 'fill-current' : ''}` })}<span className="text-[10px] font-bold">{label}</span></button>
 }
+
