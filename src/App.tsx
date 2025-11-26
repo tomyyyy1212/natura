@@ -61,7 +61,11 @@ import {
   Bike, 
   Undo2, 
   Loader2,
-  Box
+  Box,
+  DollarSign,
+  Percent,
+  ChevronDown,
+  ExternalLink
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -106,7 +110,6 @@ const APP_ID = "natura-produccion-main";
 
 // --- CONSTANTES ---
 const BRANDS = ['Natura', 'Avon', 'Cyzone', 'Esika', 'L\'Bel'];
-// Opciones nuevas para Web
 const WEB_SUPPLIERS = ['Natura Web', 'Esika Web', 'L\'Bel Web'];
 const COURIERS = ['Yo (Directo)', 'Mamá (Puesto Feria)', 'Tía Luisa']; 
 
@@ -146,9 +149,21 @@ export default function PosApp() {
     
   // Cart & UI State
   const [cart, setCart] = useState([]);
-  const [selectedClient, setSelectedClient] = useState('');
+  const [selectedClient, setSelectedClient] = useState(''); 
   const [selectedSupplier, setSelectedSupplier] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState(''); 
+  
+  // Checkout Logic State
+  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
+  const [deliveryType, setDeliveryType] = useState('immediate'); // 'immediate' | 'order'
+  const [paymentPlanType, setPaymentPlanType] = useState('full'); // 'full' | 'deposit' | 'installments'
+  const [checkoutData, setCheckoutData] = useState({
+      downPayment: '', // Pie o abono
+      installmentsCount: 3,
+      paymentMethod: '', 
+      firstPaymentDate: new Date().toISOString().split('T')[0]
+  });
+
+  const [paymentMethod, setPaymentMethod] = useState('Efectivo'); 
   const [editingTransactionId, setEditingTransactionId] = useState(null); 
   const [originalBatchesMap, setOriginalBatchesMap] = useState({}); 
     
@@ -197,15 +212,14 @@ export default function PosApp() {
   const [showPurchaseHistory, setShowPurchaseHistory] = useState(false);
 
   // Estados Pedido
-  // NUEVO: Estados para el flujo de "Pedidos" (Compras)
   const [orderSource, setOrderSource] = useState(null); // 'web' | 'catalog'
-  const [catalogBrand, setCatalogBrand] = useState(''); // NUEVO: Para guardar la marca del catalogo
+  const [catalogBrand, setCatalogBrand] = useState(''); 
   const [installmentInfo, setInstallmentInfo] = useState({ isInstallments: false, count: 1 });
   // Recepción
   const [checkInOrder, setCheckInOrder] = useState(null); 
   const [checkInItems, setCheckInItems] = useState([]);
 
-  const [purchaseMode, setPurchaseMode] = useState(null); // Mantenido por compatibilidad si se usa magazine
+  const [purchaseMode, setPurchaseMode] = useState(null);
   const [selectedCycle, setSelectedCycle] = useState('');
   const [magazineFile, setMagazineFile] = useState(null);
 
@@ -231,6 +245,13 @@ export default function PosApp() {
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [showClientOptions, setShowClientOptions] = useState(false);
   const clientInputRef = useRef(null);
+
+  // Finanzas State
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [selectedPaymentTx, setSelectedPaymentTx] = useState(null);
+  const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(null); // Index of installment
+  const [paymentAmountInput, setPaymentAmountInput] = useState('');
+  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); // Nuevo estado para archivo
 
   // Report Phones
   const [reportPhones, setReportPhones] = useState(() => {
@@ -265,7 +286,6 @@ export default function PosApp() {
           await signInAnonymously(auth);
         }
       } catch (error) {
-        console.warn("Token mismatch or auth error, attempting anonymous login...", error);
         try {
             await signInAnonymously(auth);
         } catch (anonError) {
@@ -337,49 +357,170 @@ export default function PosApp() {
       return { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'BIEN' };
   };
 
-  // Kardex
-  const loadProductHistory = async (prodId) => {
-    setLoadingHistory(true);
-    setProductHistory([]);
-    try {
-      const history = [];
-      const basePath = `artifacts/${APP_ID}/public/data`;
-      const batchesQ = query(collection(db, basePath, 'inventory_batches'), where('productId', '==', prodId));
-      const batchesSnap = await getDocs(batchesQ);
-      batchesSnap.forEach(doc => {
-          const d = doc.data();
-          history.push({
-              id: doc.id,
-              type: 'IN',
-              date: d.date?.seconds * 1000 || Date.now(),
-              qty: d.initialQty,
-              price: d.cost,
-              ref: 'Recepción'
+  // --- CALCULO DE FECHAS DE PAGO ---
+  const calculatePaymentSchedule = (total, planType, data) => {
+      let schedule = [];
+      const today = new Date();
+      
+      if (planType === 'full') {
+          // Cambio: "Pago Completo" ahora significa DEUDA TOTAL pendiente.
+          // Se paga después en Finanzas.
+          schedule.push({
+              number: 1,
+              date: null, // Sin fecha específica, es deuda corriente
+              amount: total,
+              status: 'pending',
+              type: 'total'
           });
-      });
-      transactions.forEach(t => {
-          if (t.type === 'sale' && (t.saleStatus === 'completed' || t.saleStatus === 'in_transit')) { 
-              const item = t.items.find(i => i.id === prodId);
-              if (item) {
-                  history.push({
-                      id: t.id,
-                      type: 'OUT',
-                      date: t.date?.seconds * 1000 || Date.now(),
-                      qty: item.qty,
-                      price: item.transactionPrice,
-                      margin: (item.transactionPrice * item.qty) - (item.fifoTotalCost || 0),
-                      ref: t.saleStatus === 'in_transit' ? 'En Reparto' : 'Venta',
-                      fifoDetails: item.fifoDetails || []
-                  });
-              }
+      } else if (planType === 'deposit') {
+          // Abono
+          const deposit = Number(data.downPayment);
+          const remaining = total - deposit;
+          
+          // Primer pago (Abono) - ESTADO PAGADO (Se cobra al momento si es abono)
+          schedule.push({
+              number: 1,
+              date: today.getTime() / 1000,
+              amount: deposit,
+              status: 'paid',
+              type: 'abono',
+              method: data.paymentMethod // Guardamos el metodo del abono
+          });
+          
+          // Segundo pago (Saldo)
+          if (remaining > 0) {
+              schedule.push({
+                  number: 2,
+                  date: null, // Fecha por definir
+                  amount: remaining,
+                  status: 'pending',
+                  type: 'saldo'
+              });
           }
-      });
-      history.sort((a, b) => b.date - a.date);
-      setProductHistory(history);
+      } else if (planType === 'installments') {
+          // Cuotas
+          const count = Number(data.installmentsCount);
+          const amountPerQuota = Math.round(total / count);
+          
+          let startDate = new Date(data.firstPaymentDate);
+          startDate.setHours(12, 0, 0, 0); // Avoid timezone issues
+
+          for (let i = 0; i < count; i++) {
+              const paymentDate = new Date(startDate);
+              paymentDate.setMonth(startDate.getMonth() + i);
+              
+              schedule.push({
+                  number: i + 1,
+                  date: paymentDate.getTime() / 1000,
+                  amount: amountPerQuota,
+                  status: 'pending',
+                  type: 'cuota'
+              });
+          }
+      }
+      return schedule;
+  };
+
+  // --- SAVE CHECKOUT TRANSACTION ---
+  const handleConfirmCheckout = async () => {
+    if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
+    
+    // Validar Stock si es Inmediato
+    if (deliveryType === 'immediate') {
+        const missing = cart.filter(item => {
+            const product = products.find(p => p.id === item.id);
+            return !product || product.stock < item.qty;
+        });
+        if (missing.length > 0) {
+            triggerAlert("Sin Stock", "No puedes entregar inmediata. Hay productos sin stock.", "error");
+            return;
+        }
+    }
+
+    // Validación de Medio de Pago: Solo si es Abono (Deposito) con monto > 0
+    if (paymentPlanType === 'deposit' && checkoutData.downPayment > 0 && !checkoutData.paymentMethod) {
+        triggerAlert("Falta Pago", "Selecciona el medio de pago para el abono.", "error");
+        return;
+    }
+
+    setLoading(true);
+    setProcessingMsg("Registrando Pedido...");
+
+    try {
+        const batch = writeBatch(db);
+        const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
+        const now = new Date();
+        const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
+
+        // Descuento de stock y FIFO solo si es Entrega Inmediata
+        let transactionFIFO = 0;
+        let finalItems = [...cart];
+
+        if (deliveryType === 'immediate') {
+             for (let item of finalItems) {
+                 const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
+                 item.fifoTotalCost = totalCost; 
+                 item.fifoDetails = fifoDetails;
+                 transactionFIFO += totalCost;
+                 batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
+                 batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
+             }
+        }
+
+        const margin = total - transactionFIFO;
+        const paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
+        
+        // Calcular estado de pago inicial CORREGIDO
+        let initialPaid = 0;
+        if (paymentPlanType === 'deposit') {
+            initialPaid = Number(checkoutData.downPayment);
+        }
+        // Para 'full' (Pago Completo) y 'installments', initialPaid es 0.
+        
+        const balance = total - initialPaid;
+        const paymentStatus = balance <= 0 ? 'paid' : (initialPaid > 0 ? 'partial' : 'pending');
+
+        const transactionData = {
+            id: newTransId, 
+            type: 'sale',
+            items: finalItems,
+            total: total,
+            clientId: selectedClient,
+            date: { seconds: now.getTime() / 1000 },
+            
+            // Logica nueva de pago
+            paymentPlanType, 
+            paymentSchedule, 
+            balance,         
+            paymentStatus,   
+            
+            // Logica antigua/hibrida (Solo guardamos metodo si hubo pago inicial real)
+            paymentMethod: (paymentPlanType === 'deposit') ? checkoutData.paymentMethod : null, 
+            totalCost: transactionFIFO,
+            margin: margin,
+            marginPercent: (total > 0) ? (margin/total)*100 : 0,
+            
+            // Estado de entrega
+            saleStatus: deliveryType === 'immediate' ? 'completed' : 'pending',
+            origin: 'POS',
+            courier: deliveryType === 'immediate' ? 'Yo (Directo)' : null,
+            deliveredAt: deliveryType === 'immediate' ? { seconds: now.getTime() / 1000 } : null,
+            finalizedAt: (deliveryType === 'immediate' && paymentStatus === 'paid') ? { seconds: now.getTime() / 1000 } : null
+        };
+
+        batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), transactionData);
+        await batch.commit();
+        
+        clearCart();
+        setIsCheckoutModalOpen(false);
+        triggerAlert("Éxito", deliveryType === 'immediate' ? "Venta cerrada." : "Pedido registrado en Finanzas.", "success");
+
     } catch (error) {
-      console.error(error);
+        console.error(error);
+        triggerAlert("Error", "No se pudo guardar.", "error");
     } finally {
-      setLoadingHistory(false);
+        setLoading(false);
+        setProcessingMsg('');
     }
   };
 
@@ -456,11 +597,57 @@ export default function PosApp() {
           return;
       }
       let message = `Hola *${client.name}*! 👋\n\nTe cuento que ya tengo listos tus productos de Natura/Avon:\n`;
-      transaction.items.forEach(i => {
+      (transaction.items || []).forEach(i => {
           message += `- ${i.name} x${i.qty}\n`;
       });
       message += `\nTotal: $${formatMoney(transaction.total)}\n\n¿Cuándo te acomoda que coordinemos la entrega?`;
       window.open(`https://wa.me/${client.phone}?text=${encodeURIComponent(message)}`, '_blank');
+  };
+
+  // --- KARDEX: Cargar Historial ---
+  const loadProductHistory = async (prodId) => {
+    setLoadingHistory(true);
+    setProductHistory([]);
+    try {
+      const history = [];
+      const basePath = `artifacts/${APP_ID}/public/data`;
+      const batchesQ = query(collection(db, basePath, 'inventory_batches'), where('productId', '==', prodId));
+      const batchesSnap = await getDocs(batchesQ);
+      batchesSnap.forEach(doc => {
+          const d = doc.data();
+          history.push({
+              id: doc.id,
+              type: 'IN',
+              date: d.date?.seconds * 1000 || Date.now(),
+              qty: d.initialQty,
+              price: d.cost,
+              ref: 'Recepción'
+          });
+      });
+      transactions.forEach(t => {
+          if (t.type === 'sale' && (t.saleStatus === 'completed' || t.saleStatus === 'in_transit')) { 
+              const item = (t.items || []).find(i => i.id === prodId);
+              if (item) {
+                  history.push({
+                      id: t.id,
+                      type: 'OUT',
+                      date: t.date?.seconds * 1000 || Date.now(),
+                      qty: item.qty,
+                      price: item.transactionPrice,
+                      margin: (item.transactionPrice * item.qty) - (item.fifoTotalCost || 0),
+                      ref: t.saleStatus === 'in_transit' ? 'En Reparto' : 'Venta',
+                      fifoDetails: item.fifoDetails || []
+                  });
+              }
+          }
+      });
+      history.sort((a, b) => b.date - a.date);
+      setProductHistory(history);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoadingHistory(false);
+    }
   };
 
   const handleDeleteProduct = async (productId) => {
@@ -470,7 +657,7 @@ export default function PosApp() {
           message: "¿Estás seguro de que quieres eliminar este producto permanentemente?",
           type: "danger",
           onConfirm: async () => {
-              setConfirmationState(prev => ({ ...prev, show: false })); // Cerrar modal
+              setConfirmationState(prev => ({ ...prev, show: false })); 
               setLoading(true);
               setProcessingMsg("Eliminando...");
               try {
@@ -515,19 +702,12 @@ export default function PosApp() {
               try {
                   const batch = writeBatch(db);
                   batch.delete(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id));
-                  // Si ya se descontó stock (completed o in_transit), devolverlo
                   if (transaction.saleStatus === 'completed' || transaction.saleStatus === 'in_transit') { 
-                      transaction.items.forEach(item => {
+                      (transaction.items || []).forEach(item => {
                           const productRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
                           const adjustment = transaction.type === 'sale' ? item.qty : -item.qty;
                           batch.update(productRef, { stock: increment(adjustment) });
                       });
-                      // Si era purchase, borrar los lotes también
-                      if (transaction.type === 'purchase') {
-                          const batchesQ = query(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`), where('transactionId', '==', transaction.id));
-                          const batchesSnap = await getDocs(batchesQ);
-                          batchesSnap.forEach(b => batch.delete(b.ref));
-                      }
                   }
                   await batch.commit();
                   setReceiptDetails(null);
@@ -543,49 +723,9 @@ export default function PosApp() {
       });
   };
 
-  const handleEditPurchase = async (transaction) => {
-      // Mantenemos esta función por seguridad, aunque en el nuevo flujo 
-      // de Pedidos la edición es diferente, el usuario pidió no borrar funcionalidades.
-      if (transaction.type !== 'purchase') return;
-      setLoading(true);
-      setProcessingMsg("Cargando lotes originales...");
-
-      try {
-          const batchesRef = collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`);
-          const q = query(batchesRef, where('transactionId', '==', transaction.id));
-          const snapshot = await getDocs(q);
-          
-          const batchesMap = {};
-          const itemsWithBatchId = transaction.items.map(item => {
-              const matchingBatch = snapshot.docs.find(d => d.data().productId === item.id);
-              if (matchingBatch) {
-                  const bData = matchingBatch.data();
-                  batchesMap[matchingBatch.id] = { ...bData, id: matchingBatch.id };
-                  return { ...item, batchId: matchingBatch.id, originalQty: bData.initialQty, expirationDate: bData.expirationDate };
-              }
-              return { ...item, originalQty: item.qty };
-          });
-
-          setCart(itemsWithBatchId);
-          setOriginalBatchesMap(batchesMap);
-          if(transaction.clientId) setSelectedSupplier(transaction.clientId);
-          setView('purchases');
-          setShowPurchaseHistory(false);
-          setOrderSource('web'); // Simular que es web para que aparezca el UI, aunque en edición es complejo
-          setEditingTransactionId(transaction.id);
-          triggerAlert("Modo Edición", "Ajusta cantidades. El sistema validará el stock vendido.", "info");
-      } catch (error) {
-          console.error(error);
-          triggerAlert("Error", "No se pudo cargar para editar.", "error");
-      } finally {
-          setLoading(false);
-          setProcessingMsg('');
-      }
-  };
-
   const handleDeliverOrder = (transaction) => {
       const missingStock = [];
-      transaction.items.forEach(item => {
+      (transaction.items || []).forEach(item => {
           const currentProduct = products.find(p => p.id === item.id);
           if (!currentProduct || currentProduct.stock < item.qty) {
               missingStock.push(`${item.name} (Faltan: ${item.qty - (currentProduct?.stock || 0)})`);
@@ -598,22 +738,35 @@ export default function PosApp() {
       setReceiptDetails(null); 
       setDeliveryTransaction(transaction);
       setDeliveryPaymentMethod('Efectivo');
-      setSelectedCourier('Yo (Directo)'); // Reset a default
+      setSelectedCourier('Yo (Directo)'); 
       setIsDeliveryModalOpen(true);
   };
 
-  // INICIA EL PROCESO DE DESPACHO (Mueve a completed o in_transit)
   const startDeliveryProcess = async () => {
       if (!deliveryTransaction) return;
       setLoading(true);
       setProcessingMsg(selectedCourier === 'Yo (Directo)' ? "Cerrando Venta..." : "Enviando a Reparto...");
+      
+      // VALIDATION FOR DIRECT DELIVERY: IF NOT PAID AND NOT INSTALLMENTS, BLOCK
+      if (selectedCourier === 'Yo (Directo)') {
+          const isInstallments = deliveryTransaction.paymentPlanType === 'installments';
+          const isPaid = deliveryTransaction.paymentStatus === 'paid';
+          const isLegacy = !deliveryTransaction.paymentPlanType; // Handle old data
+          
+          if (!isInstallments && !isPaid && !isLegacy) {
+               setLoading(false);
+               setProcessingMsg('');
+               triggerAlert("Pendiente de Pago", "El cliente tiene deuda pendiente. Registra el pago en Finanzas antes de cerrar la venta.", "error");
+               return;
+          }
+      }
+      
       try {
           const batch = writeBatch(db);
           let finalTotalCost = 0;
           const updatedItems = [];
           
-          // DESCUENTO STOCK Y FIFO (Esto pasa SIEMPRE, sea Yo o Mamá, porque el producto sale)
-          for (const item of deliveryTransaction.items) {
+          for (const item of (deliveryTransaction.items || [])) {
                const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
                finalTotalCost += totalCost;
                updatedItems.push({
@@ -627,16 +780,14 @@ export default function PosApp() {
           const transRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, deliveryTransaction.id);
           const margin = deliveryTransaction.total - finalTotalCost;
           
-          // ESTADO: Si es 'Yo' -> completed. Si es otro -> in_transit
           const nextStatus = selectedCourier === 'Yo (Directo)' ? 'completed' : 'in_transit';
           const now = new Date();
 
           batch.update(transRef, { 
               saleStatus: nextStatus, 
-              courier: selectedCourier, // Guardamos quién lo lleva
-              paymentMethod: deliveryPaymentMethod,
-              deliveredAt: { seconds: now.getTime() / 1000 }, // Fecha de salida
-              finalizedAt: selectedCourier === 'Yo (Directo)' ? { seconds: now.getTime() / 1000 } : null, // Si soy yo, finaliza al tiro
+              courier: selectedCourier,
+              deliveredAt: { seconds: now.getTime() / 1000 }, 
+              finalizedAt: selectedCourier === 'Yo (Directo)' ? { seconds: now.getTime() / 1000 } : null,
               items: updatedItems,
               totalCost: finalTotalCost,
               margin: margin,
@@ -645,7 +796,7 @@ export default function PosApp() {
           await batch.commit();
           setIsDeliveryModalOpen(false);
           setDeliveryTransaction(null);
-          triggerAlert(nextStatus === 'completed' ? "Venta Cerrada" : "En Reparto", nextStatus === 'completed' ? "Stock descontado y dinero ingresado." : `Entregado a ${selectedCourier}. Stock descontado.`, "success");
+          triggerAlert(nextStatus === 'completed' ? "Venta Cerrada" : "En Reparto", nextStatus === 'completed' ? "Stock descontado." : `Entregado a ${selectedCourier}. Stock descontado.`, "success");
       } catch (error) {
           console.error(error);
           triggerAlert("Error", "Fallo proceso.", "error");
@@ -655,24 +806,33 @@ export default function PosApp() {
       }
   };
 
-  // PRE-CONFIRMACION: Abre modal para seleccionar fecha si es necesario
   const handleConfirmDeliveryClick = (transaction) => {
+      // VALIDACIÓN CORREGIDA Y PERMISIVA PARA LEGACY: 
+      const isInstallments = transaction.paymentPlanType === 'installments';
+      const isPaid = transaction.paymentStatus === 'paid';
+      
+      // Si es data vieja (undefined), asumimos que se puede procesar (legacy bypass)
+      const isLegacy = !transaction.paymentPlanType;
+      
+      if (!isInstallments && !isPaid && !isLegacy) {
+          triggerAlert("Pago Incompleto", "No puedes confirmar la entrega. El cliente debe pagar el total o saldo pendiente. Ve a Finanzas.", "error");
+          return;
+      }
+
       setConfirmDeliveryModal({ show: true, transaction: transaction });
-      setDeliveryDateInput(new Date().toISOString().split('T')[0]); // Reset a hoy
+      setDeliveryDateInput(new Date().toISOString().split('T')[0]); 
   };
 
-  // CONFIRMA ENTREGA FINAL (De in_transit a completed) CON FECHA ESPECIFICA
   const processDeliveryConfirmation = async () => {
       const transaction = confirmDeliveryModal.transaction;
       if (!transaction || !transaction.id) return;
       
-      setConfirmDeliveryModal({ show: false, transaction: null }); // Cerrar modal fecha
+      setConfirmDeliveryModal({ show: false, transaction: null }); 
       setLoading(true);
       setProcessingMsg("Finalizando Venta...");
       
       try {
-          // Convertir fecha input a timestamp
-          const selectedDate = new Date(deliveryDateInput + 'T12:00:00'); // Mediodía para evitar problemas de zona horaria
+          const selectedDate = new Date(deliveryDateInput + 'T12:00:00'); 
           
           await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id), {
               saleStatus: 'completed',
@@ -708,34 +868,29 @@ export default function PosApp() {
   }));
   const updateTransactionPrice = (id, p) => setCart(prev => prev.map(i => i.id === id ? { ...i, transactionPrice: p } : i));
   const updateExpirationDate = (id, d) => setCart(prev => prev.map(i => i.id === id ? { ...i, expirationDate: d } : i));
-  // Helper para recepción de items
   const updateCheckInDate = (tempId, date) => setCheckInItems(prev => prev.map(i => i._tempId === tempId ? { ...i, expirationDate: date } : i));
 
   const clearCart = () => { 
       setCart([]); setSelectedClient(''); setClientSearchTerm(''); setSelectedSupplier(''); 
       setPaymentMethod(''); setEditingTransactionId(null); setMagazineFile(null); 
       setOriginalBatchesMap({}); 
-      setIsImmediateSale(false);
       setOrderSource(null);
-      setCatalogBrand(''); // Reset catalog brand
-      setSelectedCycle(''); // Reset selected cycle
+      setCatalogBrand(''); 
+      setSelectedCycle(''); 
       setInstallmentInfo({ isInstallments: false, count: 1 });
+      // Reset Checkout
+      setDeliveryType('immediate');
+      setPaymentPlanType('full');
+      setCheckoutData({
+          downPayment: '', 
+          installmentsCount: 3,
+          paymentMethod: '', 
+          firstPaymentDate: new Date().toISOString().split('T')[0]
+      });
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
 
-  const handleProcessMagazinePDF = () => {
-      if (!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona un ciclo.", "info"); return; }
-      if (!magazineFile) { triggerAlert("Falta Archivo", "Sube el PDF.", "info"); return; }
-      setLoading(true);
-      setProcessingMsg("Procesando...");
-      setTimeout(() => {
-          setLoading(false);
-          setProcessingMsg("");
-          triggerAlert("Próximamente", "Lectura PDF en desarrollo.", "info");
-      }, 2000);
-  };
-
-  // --- NUEVA LÓGICA DE CREACIÓN DE PEDIDOS (Purchases) ---
+  // --- CREAR PEDIDO (PURCHASE) ---
   const handleCreateOrder = async () => {
     if (cart.length === 0) { triggerAlert("Vacío", "Agrega productos.", "info"); return; }
     if (!selectedSupplier) { triggerAlert("Falta Origen", "Selecciona si es Web o Catálogo.", "info"); return; }
@@ -749,23 +904,22 @@ export default function PosApp() {
         const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
         const now = new Date();
 
-        // FIX: USAR setDoc para asegurar que el ID del documento sea newTransId
         await setDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), {
             id: newTransId,
-            type: 'order', // Nuevo tipo 'order' para diferenciar de 'purchase' (completado)
+            type: 'order', 
             items: [...cart],
             total: cartTotal,
-            clientId: selectedSupplier, // Guardamos aquí Natura Web, Natura Catálogo, etc
+            clientId: selectedSupplier, 
             date: { seconds: now.getTime() / 1000 },
-            saleStatus: 'pending_arrival', // Estado específico
+            saleStatus: 'pending_arrival', 
             installments: installmentInfo.isInstallments ? installmentInfo.count : 1,
-            orderType: orderSource, // 'web' o 'catalog'
-            cycle: selectedCycle || null // Guardar ciclo
+            orderType: orderSource, 
+            cycle: selectedCycle || null 
         });
 
         clearCart();
         setOrderSource(null);
-        triggerAlert("Pedido Creado", "Registrado en 'Por Llegar'. Confirma cuando recibas los productos.", "success");
+        triggerAlert("Pedido Creado", "Registrado en 'Por Llegar'.", "success");
 
     } catch (error) {
         console.error(error);
@@ -776,16 +930,16 @@ export default function PosApp() {
     }
   };
 
-  // --- INICIAR RECEPCIÓN (Check-In) ---
+  // --- RECEPCIÓN STOCK ---
   const startCheckIn = (transaction) => {
       const explodedItems = [];
-      transaction.items.forEach((item) => {
+      (transaction.items || []).forEach((item) => {
           for(let i=0; i < item.qty; i++) {
               explodedItems.push({
                   _tempId: `${item.id}_${i}_${Date.now()}`,
                   ...item,
-                  uniqueQty: 1, // Siempre 1 para control individual
-                  expirationDate: '' // Usuario debe llenar
+                  uniqueQty: 1, 
+                  expirationDate: '' 
               });
           }
       });
@@ -793,7 +947,6 @@ export default function PosApp() {
       setCheckInOrder(transaction);
   };
 
-  // --- CONFIRMAR RECEPCIÓN ---
   const confirmCheckIn = async () => {
       if (checkInItems.some(i => !i.expirationDate)) {
           triggerAlert("Faltan Fechas", "Ingresa el vencimiento de CADA producto.", "error");
@@ -843,79 +996,69 @@ export default function PosApp() {
       }
   };
 
-  // --- MANEJO TRANSACCION DE VENTAS (POS) ---
-  const handleTransaction = async () => {
-    if (cart.length === 0) { triggerAlert("Vacío", "Agrega productos.", "info"); return; }
-    // Si estamos en vista purchases (Pedidos), usamos el nuevo handler handleCreateOrder
-    if (view === 'purchases') {
-        handleCreateOrder();
-        return;
-    }
+  // --- FINANZAS: REGISTRAR PAGO ---
+  const handleRegisterPayment = async () => {
+      if(!selectedPaymentTx) return;
+      const amount = parseInt(paymentAmountInput) || 0;
+      if (amount <= 0) { triggerAlert("Monto Inválido", "Ingresa un monto mayor a 0", "error"); return; }
+      
+      setLoading(true);
+      setProcessingMsg("Registrando Pago...");
 
-    // Lógica de Ventas (POS)
-    if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona cliente.", "info"); return; }
-    if (isImmediateSale && !paymentMethod) { triggerAlert("Falta Pago", "Selecciona medio de pago.", "info"); return; }
-    
-    if (isImmediateSale) {
-        const missing = cart.filter(item => {
-            const product = products.find(p => p.id === item.id);
-            return !product || product.stock < item.qty;
-        });
-        if (missing.length > 0) {
-            triggerAlert("Sin Stock", "No puedes entregar inmediatamente. Productos sin stock suficiente. Guárdalo como encargo.", "error");
-            return;
-        }
-    }
+      let receiptUrl = null;
+      try {
+          if (paymentReceiptFile) {
+              const storageRef = ref(storage, `receipts/${Date.now()}_${paymentReceiptFile.name}`);
+              const snap = await uploadBytes(storageRef, paymentReceiptFile);
+              receiptUrl = await getDownloadURL(snap.ref);
+          }
+      } catch (e) {
+          console.error("Error uploading receipt", e);
+          triggerAlert("Error Comprobante", "No se pudo subir la imagen, pero se intentará registrar el pago.", "info");
+      }
 
-    setLoading(true);
-    setProcessingMsg('Guardando Venta...');
+      try {
+          const txRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, selectedPaymentTx.id);
+          let updatedSchedule = [...selectedPaymentTx.paymentSchedule];
+          let updatedBalance = selectedPaymentTx.balance;
 
-    try {
-        const batch = writeBatch(db);
-        const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
+          // Si seleccionó una cuota específica
+          if (selectedPaymentIndex !== null) {
+              updatedSchedule[selectedPaymentIndex] = {
+                  ...updatedSchedule[selectedPaymentIndex],
+                  status: 'paid',
+                  paidAmount: amount,
+                  paidAt: Date.now() / 1000,
+                  method: paymentMethod || 'Efectivo',
+                  receiptUrl: receiptUrl
+              };
+              updatedBalance -= amount;
+          } else {
+              // Fallback
+              updatedBalance -= amount;
+          }
 
-        if (isImmediateSale) {
-             for (const item of cart) {
-                 const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
-                 item.fifoTotalCost = totalCost; 
-                 item.fifoDetails = fifoDetails;
-                 batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
-                 batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
-             }
-        }
+          const newStatus = updatedBalance <= 0 ? 'paid' : 'partial';
+          
+          await updateDoc(txRef, {
+              paymentSchedule: updatedSchedule,
+              balance: updatedBalance,
+              paymentStatus: newStatus
+          });
 
-        const transactionFIFO = isImmediateSale ? cart.reduce((acc, i) => acc + (i.fifoTotalCost || 0), 0) : 0;
-        const margin = (cartTotal - transactionFIFO);
-        const now = new Date();
+          setPaymentModalOpen(false);
+          setPaymentAmountInput('');
+          setSelectedPaymentTx(null);
+          setPaymentReceiptFile(null); // Clear file
+          triggerAlert("Pago Registrado", "El saldo ha sido actualizado.", "success");
 
-        batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), {
-            id: newTransId, 
-            type: 'sale',
-            items: [...cart],
-            total: cartTotal,
-            clientId: selectedClient,
-            date: { seconds: now.getTime() / 1000 },
-            paymentMethod: isImmediateSale ? paymentMethod : null,
-            totalCost: transactionFIFO,
-            margin: margin,
-            marginPercent: (cartTotal > 0) ? (margin/cartTotal)*100 : 0,
-            saleStatus: isImmediateSale ? 'completed' : 'pending',
-            origin: 'POS',
-            courier: isImmediateSale ? 'Yo (Directo)' : null,
-            deliveredAt: isImmediateSale ? { seconds: now.getTime() / 1000 } : null,
-            finalizedAt: isImmediateSale ? { seconds: now.getTime() / 1000 } : null
-        });
-
-        await batch.commit();
-        clearCart();
-        triggerAlert("Éxito", isImmediateSale ? "Venta realizada." : "Encargo guardado.", "success");
-    } catch (error) {
-        console.error(error);
-        triggerAlert("Error", "Fallo al guardar.", "error");
-    } finally {
-        setLoading(false);
-        setProcessingMsg('');
-    }
+      } catch(e) {
+          console.error(e);
+          triggerAlert("Error", "No se pudo registrar pago", "error");
+      } finally {
+          setLoading(false);
+          setProcessingMsg("");
+      }
   };
 
   const simpleSave = async (collectionName, data, isModalOpenSetter) => {
@@ -973,10 +1116,11 @@ export default function PosApp() {
     try { 
         const docRef = await addDoc(collection(db, `artifacts/${APP_ID}/public/data/clients`), clientData); 
         setIsClientModalOpen(false); 
-        if(view === 'pos'){ 
-            setSelectedClient(docRef.id); 
-            setClientSearchTerm(clientData.name); 
-        } 
+        // Si estamos en checkout, autoseleccionar
+        if (isCheckoutModalOpen) {
+             setSelectedClient(docRef.id);
+             setClientSearchTerm(clientData.name);
+        }
         triggerAlert("Cliente Creado", "El cliente ha sido registrado exitosamente.", "success"); 
     } catch (e) { 
         console.error(e);
@@ -1012,26 +1156,20 @@ export default function PosApp() {
       return c.name.toLowerCase().includes(term) || (c.department && c.department.toLowerCase().includes(term));
   });
 
-  const getFilteredTransactions = (type, start, end, entityId, productSearch) => {
-    let filtered = transactions.filter(t => t.type === type);
-    if (entityId) filtered = filtered.filter(t => t.clientId === entityId);
-    if (start) filtered = filtered.filter(t => new Date(t.date.seconds * 1000) >= new Date(`${start}T00:00:00`));
-    if (end) filtered = filtered.filter(t => new Date(t.date.seconds * 1000) <= new Date(`${end}T23:59:59.999`));
-    if (productSearch) filtered = filtered.filter(t => t.items.some(i => i.name.toLowerCase().includes(productSearch.toLowerCase())));
-    return filtered;
-  };
+  // FINANZAS FILTER
+  const pendingPaymentTransactions = useMemo(() => {
+      return transactions.filter(t => t.type === 'sale' && t.paymentStatus !== 'paid').sort((a,b) => b.date.seconds - a.date.seconds);
+  }, [transactions]);
 
-  // Separo Ventas Completadas de Pedidos Pendientes y EN REPARTO
   const filteredSales = useMemo(() => {
-      const all = getFilteredTransactions('sale', filterStartDate, filterEndDate, filterClient, filterProduct);
+      const all = transactions.filter(t => t.type === 'sale');
       return {
           completed: all.filter(t => t.saleStatus === 'completed'),
           pending: all.filter(t => t.saleStatus === 'pending'),
-          inTransit: all.filter(t => t.saleStatus === 'in_transit') // NUEVO ESTADO
+          inTransit: all.filter(t => t.saleStatus === 'in_transit') 
       };
-  }, [transactions, filterStartDate, filterEndDate, filterClient, filterProduct]);
+  }, [transactions]);
 
-  // FILTRO PARA PEDIDOS (COMPRAS) - MUESTRA LOS PENDIENTES Y LOS COMPLETADOS
   const filteredOrders = useMemo(() => {
       return transactions.filter(t => (t.type === 'order' && t.saleStatus === 'pending_arrival') || t.type === 'purchase');
   }, [transactions]);
@@ -1039,10 +1177,15 @@ export default function PosApp() {
   const pendingArrivals = filteredOrders.filter(t => t.saleStatus === 'pending_arrival');
   const purchaseHistoryData = filteredOrders.filter(t => t.type === 'purchase');
 
-  const getClientName = (id) => clients.find(c => c.id === id)?.name || 'Consumidor Final';
-  
+  const getClientName = (id) => {
+      if (!id) return 'Consumidor Final';
+      const c = clients.find(c => c.id === id);
+      return c ? c.name : 'Consumidor Final';
+  };
+   
   const getSupplierName = (id) => {
-      if (WEB_SUPPLIERS.includes(id) || id.includes('Catálogo')) return id;
+      if (!id) return 'Proveedor Desconocido';
+      if (WEB_SUPPLIERS.includes(id) || (id && id.includes('Catálogo'))) return id;
       const s = suppliers.find(sup => sup.id === id);
       return s ? s.name : id || 'Proveedor'; 
   };
@@ -1065,7 +1208,7 @@ export default function PosApp() {
       pendingTrans.sort((a,b) => (a.date.seconds - b.date.seconds));
 
       pendingTrans.forEach(t => {
-          t.items.forEach(item => {
+          (t.items || []).forEach(item => {
                const product = products.find(p => p.id === item.id);
                const brand = product ? product.brand : (item.brand || 'Sin Marca');
                const currentStock = tempStock[item.id] || 0;
@@ -1092,7 +1235,7 @@ export default function PosApp() {
 
   const getOrderStatus = (transaction) => {
       let hasShortage = false;
-      for (let item of transaction.items) {
+      for (let item of (transaction.items || [])) {
           const prod = products.find(p => p.id === item.id);
           if (!prod || prod.stock < item.qty) {
               hasShortage = true;
@@ -1124,7 +1267,7 @@ export default function PosApp() {
     const margin = totalSales - totalCost;
     
     const productMap = new Map();
-    reportTrans.forEach(t => t.items.forEach(i => {
+    reportTrans.forEach(t => (t.items || []).forEach(i => {
         const ex = productMap.get(i.id) || { name: i.name, qty: 0, revenue: 0 };
         productMap.set(i.id, { ...ex, qty: ex.qty + i.qty, revenue: ex.revenue + (i.qty * i.transactionPrice) });
     }));
@@ -1165,10 +1308,11 @@ export default function PosApp() {
   const getHeaderTitle = () => {
       switch(view) {
           case 'pos': return 'Registra Venta';
-          case 'purchases': return 'Pedidos'; // NOMBRE ACTUALIZADO
-          case 'receipts': return 'Ventas'; // NOMBRE ACTUALIZADO
+          case 'purchases': return 'Pedidos'; 
+          case 'receipts': return 'Ventas'; 
           case 'inventory': return 'Inventario';
           case 'reports': return 'Reportes';
+          case 'finances': return 'Finanzas';
           default: return view;
       }
   };
@@ -1188,9 +1332,9 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* Alert */}
+      {/* Alert - Z-Index aumentado a 120 */}
       {alertState.show && (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className={`bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center border-t-4 ${getAlertConfig(alertState.type).border}`}>
                 {React.createElement(getAlertConfig(alertState.type).icon, { className: `w-8 h-8 mx-auto mb-4 ${getAlertConfig(alertState.type).color}` })}
                 <h3 className="text-lg font-bold mb-2">{alertState.title}</h3>
@@ -1200,13 +1344,25 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* --- MODALES (SE MANTIENEN IGUALES PERO OCULTOS POR DEFECTO) --- */}
-      {/* (Código de modales de reportes, confirmación, etc. está abajo en el JSX) */}
+      {/* Confirmation Modal - Z-Index aumentado a 120 */}
+      {confirmationState.show && (
+        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center border-t-4 border-orange-500">
+                <AlertTriangle className="w-10 h-10 mx-auto mb-4 text-orange-500"/>
+                <h3 className="text-lg font-bold mb-2">{confirmationState.title}</h3>
+                <p className="text-sm text-stone-500 mb-6 whitespace-pre-line">{confirmationState.message}</p>
+                <div className="flex gap-2">
+                    <button onClick={() => setConfirmationState({...confirmationState, show: false})} className="flex-1 py-2 bg-stone-100 text-stone-500 rounded-lg font-bold">Cancelar</button>
+                    <button onClick={confirmationState.onConfirm} className={`flex-1 py-2 text-white rounded-lg font-bold ${confirmationState.type === 'danger' ? 'bg-red-600' : 'bg-stone-900'}`}>Confirmar</button>
+                </div>
+            </div>
+        </div>
+      )}
 
       {/* Header */}
-      <header className={`${view === 'purchases' ? 'bg-stone-800' : view === 'receipts' ? 'bg-stone-700' : 'bg-orange-500'} text-white p-2 shadow-md flex justify-between items-center z-10 shrink-0`}>
+      <header className={`${view === 'purchases' ? 'bg-stone-800' : view === 'receipts' ? 'bg-stone-700' : view === 'finances' ? 'bg-emerald-700' : 'bg-orange-500'} text-white p-2 shadow-md flex justify-between items-center z-10 shrink-0`}>
         <h1 className="font-bold text-base flex items-center gap-2">
-            {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'inventory' ? <Package className="w-5 h-5"/> : view === 'purchases' ? <ShoppingBag className="w-5 h-5"/> : view === 'receipts' ? <Receipt className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
+            {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'inventory' ? <Package className="w-5 h-5"/> : view === 'finances' ? <DollarSign className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
             {getHeaderTitle()}
         </h1>
       </header>
@@ -1262,328 +1418,98 @@ export default function PosApp() {
                                     </div>
                                 ))}
                             </div>
-                            <div className="space-y-3">
-                                <div className="flex gap-2">
-                                    <div className="flex-1 relative" ref={clientInputRef}>
-                                        <input className="w-full h-10 pl-8 border rounded-xl text-sm" placeholder="Cliente..." value={clientSearchTerm} onChange={e => { setClientSearchTerm(e.target.value); setShowClientOptions(true); }} onFocus={() => setShowClientOptions(true)} />
-                                        <Users className="absolute left-2 top-3 w-4 h-4 text-stone-400"/>
-                                        {showClientOptions && <div className="absolute bottom-full w-full bg-white border rounded-xl shadow-lg max-h-40 overflow-y-auto">{filteredClientsForSearch.map(c => <div key={c.id} className="p-3 hover:bg-stone-50 text-sm cursor-pointer" onClick={() => { setSelectedClient(c.id); setClientSearchTerm(c.name); setShowClientOptions(false); }}>{c.name}</div>)}</div>}
-                                    </div>
-                                    <button onClick={() => setIsClientModalOpen(true)} className="w-10 h-10 bg-stone-100 rounded-xl flex items-center justify-center"><UserPlus className="w-5 h-5"/></button>
-                                </div>
-                                <div className="flex justify-between items-center bg-stone-50 p-2 rounded-lg border">
-                                    <label className="text-xs font-bold text-stone-600 flex items-center gap-2 cursor-pointer">
-                                        <input type="checkbox" checked={isImmediateSale} onChange={e => setIsImmediateSale(e.target.checked)} className="w-4 h-4 rounded text-orange-600"/>
-                                        Entrega Inmediata
-                                    </label>
-                                    {isImmediateSale && <select className="h-8 border rounded text-xs" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}><option value="">Pago...</option><option value="Efectivo">Efectivo</option><option value="Transferencia">Transf.</option></select>}
-                                </div>
-                                <button onClick={handleTransaction} className="w-full h-12 bg-stone-800 text-white rounded-xl font-bold flex justify-between px-6 items-center">
-                                    <span>{isImmediateSale ? 'Confirmar Venta' : 'Guardar Encargo'}</span>
-                                    <span>${formatMoney(cartTotal)}</span>
-                                </button>
-                            </div>
+                            <button onClick={() => { setIsCheckoutModalOpen(true); }} className="w-full h-14 bg-stone-900 text-white rounded-xl font-bold flex justify-between px-6 items-center shadow-lg hover:bg-stone-800 transition-all">
+                                <span className="flex items-center gap-2 text-lg">Ir a Pagar <ChevronRight className="w-5 h-5"/></span>
+                                <span className="text-xl">${formatMoney(cartTotal)}</span>
+                            </button>
                         </div>
                     </div>
                 )}
             </div>
         )}
 
-        {/* --- VISTA: PEDIDOS (COMPRAS) --- */}
+        {/* FINANZAS VIEW */}
+        {view === 'finances' && (
+             <div className="p-4 pb-24">
+                 <div className="mb-6 bg-white p-6 rounded-2xl shadow-sm border border-emerald-100 flex flex-col items-center justify-center text-center">
+                     <div className="p-3 bg-emerald-50 rounded-full mb-2"><DollarSign className="w-8 h-8 text-emerald-600"/></div>
+                     <h2 className="font-bold text-lg mb-1 text-emerald-800">Cuentas por Cobrar</h2>
+                     <div className="text-4xl font-black text-stone-800 tracking-tight mb-1">
+                         ${formatMoney(pendingPaymentTransactions.reduce((acc, t) => acc + t.balance, 0))}
+                     </div>
+                     <p className="text-xs text-stone-400 font-bold uppercase tracking-widest">Saldo Total Clientes</p>
+                 </div>
+
+                 <div className="space-y-4">
+                     {pendingPaymentTransactions.length === 0 && <div className="text-center text-stone-400 py-10">¡Todo al día! No hay deudas pendientes.</div>}
+                     {pendingPaymentTransactions.map(tx => (
+                         <div key={tx.id} onClick={() => { setSelectedPaymentTx(tx); setPaymentModalOpen(true); setSelectedPaymentIndex(null); setPaymentAmountInput(''); setPaymentReceiptFile(null); }} className="bg-white p-5 rounded-2xl shadow-sm border border-stone-100 cursor-pointer hover:border-emerald-500 hover:shadow-md transition-all">
+                             <div className="flex justify-between items-start mb-3">
+                                 <div className="flex items-center gap-3">
+                                     <div className="w-10 h-10 rounded-full bg-stone-100 flex items-center justify-center font-bold text-stone-600">{getClientName(tx.clientId).charAt(0)}</div>
+                                     <div>
+                                         <div className="font-bold text-stone-800 text-lg">{getClientName(tx.clientId)}</div>
+                                         <div className="text-xs text-stone-400">{formatDateSimple(tx.date.seconds)} • {(tx.items || []).length} productos</div>
+                                     </div>
+                                 </div>
+                                 <div className="bg-red-50 text-red-600 text-sm font-bold px-3 py-1 rounded-full border border-red-100">
+                                     Debe: ${formatMoney(tx.balance)}
+                                 </div>
+                             </div>
+                             
+                             <div className="flex justify-between items-center text-xs mb-3 bg-stone-50 p-2 rounded-lg">
+                                 <span className="text-stone-500">Total Venta: <strong>${formatMoney(tx.total)}</strong></span>
+                                 <span className="font-bold text-emerald-600 bg-white px-2 py-0.5 rounded border border-emerald-100 shadow-sm">{tx.paymentPlanType === 'installments' ? 'En Cuotas' : 'Saldo/Abono'}</span>
+                             </div>
+                             
+                             <div className="relative w-full bg-stone-200 h-2 rounded-full overflow-hidden">
+                                 <div className="bg-emerald-500 h-full absolute left-0 top-0" style={{ width: `${((tx.total - tx.balance) / tx.total) * 100}%` }}></div>
+                             </div>
+                             <div className="text-[10px] text-right mt-1 text-stone-400">Pagado: {Math.round(((tx.total - tx.balance) / tx.total) * 100)}%</div>
+                         </div>
+                     ))}
+                 </div>
+             </div>
+        )}
+
+        {/* VISTA: PEDIDOS (COMPRAS) */}
         {view === 'purchases' && (
             <div className="flex flex-col h-full">
-                {/* 1. RECEPCIÓN DE STOCK (Check-In Mode) */}
                 {checkInOrder ? (
                     <div className="flex flex-col h-full bg-white animate-in slide-in-from-bottom duration-300">
                         <div className="p-4 border-b bg-amber-50 flex justify-between items-center">
-                            <div>
-                                <h2 className="font-bold text-amber-800">Confirmar Llegada</h2>
-                                <p className="text-xs text-amber-600">Ingresa vencimiento por unidad</p>
-                            </div>
+                            <div><h2 className="font-bold text-amber-800">Confirmar Llegada</h2><p className="text-xs text-amber-600">Ingresa vencimiento por unidad</p></div>
                             <button onClick={() => {setCheckInOrder(null); setCheckInItems([]);}} className="text-stone-400"><X/></button>
                         </div>
                         <div className="flex-1 overflow-y-auto p-4">
                             {checkInItems.map((item, idx) => (
                                 <div key={item._tempId} className="mb-3 border rounded-xl p-3 bg-white shadow-sm flex flex-col gap-2">
-                                    <div className="flex justify-between items-start">
-                                        <div className="font-bold text-stone-700 flex gap-2 items-center">
-                                            <span className="bg-stone-100 px-2 rounded text-xs text-stone-500">#{idx+1}</span>
-                                            {item.name}
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2 mt-1">
-                                        <CalendarDays className="w-4 h-4 text-stone-400"/>
-                                        <input 
-                                            type="date" 
-                                            className={`flex-1 p-2 border rounded-lg text-sm font-medium ${!item.expirationDate ? 'border-red-300 bg-red-50' : 'border-green-200 bg-green-50'}`}
-                                            value={item.expirationDate}
-                                            onChange={(e) => updateCheckInDate(item._tempId, e.target.value)}
-                                        />
-                                    </div>
+                                    <div className="font-bold text-stone-700 flex gap-2 items-center"><span className="bg-stone-100 px-2 rounded text-xs text-stone-500">#{idx+1}</span>{item.name}</div>
+                                    <div className="flex items-center gap-2 mt-1"><CalendarDays className="w-4 h-4 text-stone-400"/><input type="date" className={`flex-1 p-2 border rounded-lg text-sm font-medium ${!item.expirationDate ? 'border-red-300 bg-red-50' : 'border-green-200 bg-green-50'}`} value={item.expirationDate} onChange={(e) => updateCheckInDate(item._tempId, e.target.value)}/></div>
                                 </div>
                             ))}
                         </div>
-                        <div className="p-4 border-t bg-white pb-24">
-                            <button onClick={confirmCheckIn} className="w-full py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg shadow-green-200">
-                                Confirmar e Ingresar Stock
-                            </button>
-                        </div>
+                        <div className="p-4 border-t bg-white pb-24"><button onClick={confirmCheckIn} className="w-full py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg shadow-green-200">Confirmar e Ingresar Stock</button></div>
                     </div>
                 ) : (
-                    /* 2. VISTA PRINCIPAL DE PEDIDOS */
                     !orderSource ? (
-                        /* -- DASHBOARD PEDIDOS (SCROLLABLE FIX) -- */
                         <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-24">
-                            {/* Botón Nuevo Pedido */}
-                            <div className="grid grid-cols-2 gap-4">
-                                <button onClick={() => setOrderSource('selection')} className="col-span-2 bg-stone-800 text-white p-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform">
-                                    <Plus className="w-6 h-6"/> <span className="font-bold text-lg">Nuevo Pedido</span>
-                                </button>
-                            </div>
-
-                            {/* Lista Por Llegar (Pending Arrival) */}
+                            <div className="grid grid-cols-2 gap-4"><button onClick={() => setOrderSource('selection')} className="col-span-2 bg-stone-800 text-white p-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"><Plus className="w-6 h-6"/> <span className="font-bold text-lg">Nuevo Pedido</span></button></div>
                             <div>
                                 <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-500"/> Por Llegar</h3>
-                                <div className="space-y-3">
-                                    {pendingArrivals.length === 0 && <div className="text-center text-sm text-stone-400 py-4 border-2 border-dashed rounded-xl">No hay pedidos pendientes</div>}
-                                    {pendingArrivals.map(order => (
-                                        <div key={order.id} onClick={() => startCheckIn(order)} className="bg-white border border-l-4 border-l-amber-500 p-4 rounded-xl shadow-sm cursor-pointer hover:bg-amber-50 transition-colors relative">
-                                            <div className="absolute top-3 right-3 bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-1 rounded uppercase">
-                                                {order.clientId}
-                                            </div>
-                                            <div className="font-bold text-lg mb-1">${formatMoney(order.total)}</div>
-                                            <div className="text-xs text-stone-500 flex gap-3">
-                                                <span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {formatDateSimple(order.date.seconds)}</span>
-                                                <span className="flex items-center gap-1"><Box className="w-3 h-3"/> {order.items.length} prod.</span>
-                                                {order.installments > 1 && <span className="flex items-center gap-1"><CreditCard className="w-3 h-3"/> {order.installments} cuotas</span>}
-                                                {order.cycle && <span className="flex items-center gap-1 font-bold text-purple-600"><Tag className="w-3 h-3"/> {order.cycle}</span>}
-                                            </div>
-                                            <div className="mt-3 pt-2 border-t flex justify-between items-center">
-                                                <span className="text-xs font-bold text-stone-400 uppercase">Toca para recibir</span>
-                                                <ChevronRight className="w-4 h-4 text-amber-500"/>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
+                                <div className="space-y-3">{pendingArrivals.length === 0 && <div className="text-center text-sm text-stone-400 py-4 border-2 border-dashed rounded-xl">No hay pedidos pendientes</div>}{pendingArrivals.map(order => (<div key={order.id} onClick={() => startCheckIn(order)} className="bg-white border border-l-4 border-l-amber-500 p-4 rounded-xl shadow-sm cursor-pointer hover:bg-amber-50 transition-colors relative"><div className="absolute top-3 right-3 bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-1 rounded uppercase">{order.clientId}</div><div className="font-bold text-lg mb-1">${formatMoney(order.total)}</div><div className="text-xs text-stone-500 flex gap-3"><span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {formatDateSimple(order.date.seconds)}</span><span className="flex items-center gap-1"><Box className="w-3 h-3"/> {(order.items || []).length} prod.</span></div></div>))}</div>
                             </div>
-
-                            {/* Historial Pedidos Cerrados */}
-                            <div>
-                                <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Compras</h3>
-                                <div className="space-y-2">
-                                    {purchaseHistoryData.slice(0, 10).map(h => (
-                                        <div key={h.id} className="bg-stone-50 p-3 rounded-xl flex justify-between items-center opacity-70">
-                                            <div>
-                                                <div className="font-bold text-stone-700">${formatMoney(h.total)}</div>
-                                                <div className="text-[10px] text-stone-400">{formatDateSimple(h.date.seconds)} • {h.clientId}</div>
-                                            </div>
-                                            <div className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold">RECIBIDO</div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
+                            <div><h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Compras</h3><div className="space-y-2">{purchaseHistoryData.slice(0, 10).map(h => (<div key={h.id} className="bg-stone-50 p-3 rounded-xl flex justify-between items-center opacity-70 cursor-pointer" onClick={() => setReceiptDetails(h)}><div><div className="font-bold text-stone-700">${formatMoney(h.total)}</div><div className="text-[10px] text-stone-400">{formatDateSimple(h.date.seconds)} • {h.clientId}</div></div><div className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold">RECIBIDO</div></div>))}</div></div>
                         </div>
                     ) : (
-                        /* 3. CREACIÓN DE NUEVO PEDIDO (Flow) */
                         <div className="flex flex-col h-full bg-stone-50">
-                            {/* Paso 1: Selección Origen */}
-                            {orderSource === 'selection' && (
-                                <div className="p-6 flex flex-col h-full">
-                                    <div className="mb-6"><h2 className="text-2xl font-bold text-stone-800">¿Origen del Pedido?</h2><p className="text-stone-500">Selecciona cómo realizaste la compra.</p></div>
-                                    <div className="grid grid-cols-1 gap-4 flex-1 content-start">
-                                        <button onClick={() => setOrderSource('web')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 text-left group">
-                                            <div className="bg-blue-100 w-12 h-12 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><Globe className="w-6 h-6 text-blue-600"/></div>
-                                            <h3 className="font-bold text-lg">Compra Web</h3>
-                                            <p className="text-sm text-stone-400">Pedido online (Natura, Esika, L'Bel)</p>
-                                        </button>
-                                        <button onClick={() => setOrderSource('catalog')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-pink-500 text-left group">
-                                            <div className="bg-pink-100 w-12 h-12 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><BookOpen className="w-6 h-6 text-pink-600"/></div>
-                                            <h3 className="font-bold text-lg">Catálogo</h3>
-                                            <p className="text-sm text-stone-400">Pedido tradicional por revista</p>
-                                        </button>
-                                    </div>
-                                    <button onClick={() => setOrderSource(null)} className="py-3 text-stone-400 font-bold">Cancelar</button>
-                                </div>
-                            )}
-
-                            {/* Paso 2: Detalles (Web o Catálogo) */}
-                            {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (
-                                <div className="p-6 flex flex-col h-full animate-in slide-in-from-right duration-200">
-                                    <div className="mb-6">
-                                        <h2 className="text-2xl font-bold text-stone-800">{orderSource === 'web' ? 'Selecciona Web' : 'Detalles Catálogo'}</h2>
-                                    </div>
-                                    
-                                    {orderSource === 'web' ? (
-                                        <div className="space-y-3">
-                                            {WEB_SUPPLIERS.map(s => (
-                                                <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border rounded-xl font-bold text-left hover:bg-stone-50">{s}</button>
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">
-                                            {/* NUEVO: Selección de Marca para Catálogo */}
-                                            {!catalogBrand ? (
-                                                <div>
-                                                    <label className="block font-bold text-sm mb-3">¿De qué marca es el catálogo?</label>
-                                                    <div className="grid grid-cols-2 gap-3">
-                                                        {BRANDS.map(b => (
-                                                            <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <>
-                                                    <div className="flex justify-between items-center border-b pb-2">
-                                                        <span className="font-bold text-lg text-stone-700">{catalogBrand}</span>
-                                                        <button onClick={() => setCatalogBrand('')} className="text-xs text-blue-500 underline">Cambiar</button>
-                                                    </div>
-
-                                                    {/* NUEVO: Selector de Ciclo/Campaña */}
-                                                    <div>
-                                                        <label className="block font-bold text-sm mb-2">Campaña / Ciclo</label>
-                                                        <div className="flex gap-2">
-                                                            <select 
-                                                                className="flex-1 p-3 border rounded-xl bg-stone-50" 
-                                                                value={selectedCycle} 
-                                                                onChange={(e) => setSelectedCycle(e.target.value)}
-                                                            >
-                                                                <option value="">Seleccionar...</option>
-                                                                {cycles.map(c => <option key={c} value={c}>{c}</option>)}
-                                                            </select>
-                                                            <button 
-                                                                onClick={() => setIsCycleModalOpen(true)} 
-                                                                className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center hover:bg-stone-700"
-                                                            >
-                                                                <Plus className="w-6 h-6"/>
-                                                            </button>
-                                                        </div>
-                                                    </div>
-
-                                                    <div>
-                                                        <label className="block font-bold text-sm mb-2">¿Es compra en cuotas?</label>
-                                                        <div className="flex gap-2">
-                                                            <button onClick={() => setInstallmentInfo({...installmentInfo, isInstallments: false})} className={`flex-1 py-2 rounded-lg border font-bold ${!installmentInfo.isInstallments ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-stone-500'}`}>No</button>
-                                                            <button onClick={() => setInstallmentInfo({...installmentInfo, isInstallments: true})} className={`flex-1 py-2 rounded-lg border font-bold ${installmentInfo.isInstallments ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-stone-500'}`}>Sí</button>
-                                                        </div>
-                                                    </div>
-                                                    {installmentInfo.isInstallments && (
-                                                        <div>
-                                                            <label className="block font-bold text-sm mb-2">Cantidad de Cuotas</label>
-                                                            <select className="w-full p-3 border rounded-xl bg-stone-50" value={installmentInfo.count} onChange={e => setInstallmentInfo({...installmentInfo, count: parseInt(e.target.value)})}>
-                                                                {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
-                                                            </select>
-                                                        </div>
-                                                    )}
-                                                    
-                                                    <button 
-                                                        onClick={() => {
-                                                            if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona la campaña/ciclo.", "info"); return; }
-                                                            setSelectedSupplier(`${catalogBrand} Catálogo`);
-                                                        }} 
-                                                        className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl"
-                                                    >
-                                                        Continuar
-                                                    </button>
-                                                </>
-                                            )}
-                                        </div>
-                                    )}
-                                    <button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button>
-                                </div>
-                            )}
-
-                            {/* Paso 3: Selección Productos (Carrito de Compra) - LOOK & FEEL ACTUALIZADO (GRID) */}
+                            {orderSource === 'selection' && (<div className="p-6 flex flex-col h-full"><div className="mb-6"><h2 className="text-2xl font-bold text-stone-800">¿Origen del Pedido?</h2></div><div className="grid grid-cols-1 gap-4 flex-1 content-start"><button onClick={() => setOrderSource('web')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 text-left group"><h3 className="font-bold text-lg">Compra Web</h3></button><button onClick={() => setOrderSource('catalog')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-pink-500 text-left group"><h3 className="font-bold text-lg">Catálogo</h3></button></div><button onClick={() => setOrderSource(null)} className="py-3 text-stone-400 font-bold">Cancelar</button></div>)}
+                            {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (<div className="p-6 flex flex-col h-full"><h2 className="text-2xl font-bold mb-6">Detalles</h2>{orderSource === 'web' ? (<div className="space-y-3">{WEB_SUPPLIERS.map(s => <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border rounded-xl font-bold text-left hover:bg-stone-50">{s}</button>)}</div>) : (<div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">{!catalogBrand ? (<div><label className="block font-bold text-sm mb-3">Marca</label><div className="grid grid-cols-2 gap-3">{BRANDS.map(b => <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>)}</div></div>) : (<><div><label className="block font-bold text-sm mb-2">Campaña</label><div className="flex gap-2"><select className="flex-1 p-3 border rounded-xl bg-stone-50" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}><option value="">Seleccionar...</option>{cycles.map(c => <option key={c} value={c}>{c}</option>)}</select><button onClick={() => setIsCycleModalOpen(true)} className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center"><Plus/></button></div></div><button onClick={() => {if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona ciclo.", "info"); return; } setSelectedSupplier(`${catalogBrand} Catálogo`);}} className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl">Continuar</button></>)}</div>)}<button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button></div>)}
                             {selectedSupplier && (
                                 <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
-                                    {/* Buscador y Filtros (Igual que Stock) */}
-                                    <div className="p-2 bg-white border-b relative space-y-2">
-                                        <div className="relative">
-                                            <Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/>
-                                            <input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar producto para agregar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
-                                        </div>
-                                        {/* Filtros de Categoría */}
-                                        <div className="flex gap-2 overflow-x-auto no-scrollbar">
-                                            <button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>
-                                            {categories.map(c => (
-                                                <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    
-                                    {/* GRID DE PRODUCTOS (Igual que Stock) */}
-                                    <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48">
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                                            {filteredProducts.map(p => (
-                                                <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full">
-                                                    {/* Image Area */}
-                                                    <div className="aspect-square w-full relative">
-                                                        {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200 bg-stone-50" />}
-                                                    </div>
-                                                    {/* Details Area */}
-                                                    <div className="p-2 flex flex-col flex-1 justify-between text-left w-full">
-                                                        <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
-                                                        <div className="mt-2 flex justify-between items-end w-full">
-                                                            <span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span>
-                                                            <div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div>
-                                                        </div>
-                                                    </div>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    {/* Carrito de Compra (Purchase Cart) COMPACTO & OPTIMIZADO */}
-                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-[0_-4px_20px_rgba(0,0,0,0.15)] border-t border-stone-200 flex flex-col max-h-[50vh] min-h-0"> 
-                                        {/* Header Compacto */}
-                                        <div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0">
-                                            <div className="flex items-center gap-2 overflow-hidden">
-                                                <ShoppingCart className="w-4 h-4 text-stone-700 shrink-0"/>
-                                                <span className="font-bold text-stone-800 text-sm whitespace-nowrap">Resumen</span>
-                                                <span className="text-xs text-stone-500 truncate border-l pl-2 border-stone-300 max-w-[150px]">{selectedSupplier}</span>
-                                            </div>
-                                            <button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500 hover:bg-red-100 hover:text-red-500 transition-colors">
-                                                <X className="w-4 h-4"/>
-                                            </button>
-                                        </div>
-
-                                        {/* Lista Scrollable */}
-                                        <div className="flex-1 overflow-y-auto p-3 min-h-0"> {/* min-h-0 is key for nested flex scroll */}
-                                            {cart.length === 0 && <div className="text-center text-stone-400 py-4 text-xs">Agrega productos arriba</div>}
-                                            {cart.map(item => (
-                                                <div key={item.id} className="mb-3 border-b pb-2 last:border-0">
-                                                    <div className="flex justify-between items-start mb-1">
-                                                        <span className="text-xs font-bold line-clamp-1">{item.name}</span>
-                                                        <button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button>
-                                                    </div>
-                                                    <div className="flex gap-2 items-end">
-                                                        <div className="flex items-center bg-stone-100 rounded-lg h-7">
-                                                            <button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button>
-                                                            <span className="text-xs font-bold w-5 text-center">{item.qty}</span>
-                                                            <button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button>
-                                                        </div>
-                                                        <div className="flex-1">
-                                                            <input type="number" className="w-full border-b border-stone-300 text-xs font-bold text-right focus:border-stone-800 outline-none bg-transparent" 
-                                                                value={item.transactionPrice === 0 ? '' : item.transactionPrice} 
-                                                                placeholder="Costo..."
-                                                                onChange={e => updateTransactionPrice(item.id, parseInt(e.target.value) || 0)}
-                                                            />
-                                                        </div>
-                                                        <div className="w-16 text-right">
-                                                            <div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-
-                                        {/* Footer Compacto */}
-                                        <div className="p-3 border-t bg-white shrink-0">
-                                            <button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm">
-                                                <span>Guardar Pedido</span>
-                                                <span>${formatMoney(cartTotal)}</span>
-                                            </button>
-                                        </div>
-                                    </div>
+                                    <div className="p-2 bg-white border-b relative space-y-2"><div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div><div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div></div>
+                                    <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48"><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{filteredProducts.map(p => (<button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full"><div className="aspect-square w-full relative">{p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}</div><div className="p-2 flex flex-col flex-1 justify-between text-left w-full"><span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span><div className="mt-2 flex justify-between items-end w-full"><span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span><div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div></div></div></button>))}</div></div>
+                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><input type="number" className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={e => updateTransactionPrice(item.id, parseInt(e.target.value) || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
                                 </div>
                             )}
                         </div>
@@ -1591,7 +1517,7 @@ export default function PosApp() {
                 )}
             </div>
         )}
-
+        
         {/* INVENTORY */}
         {view === 'inventory' && (
             <div className="p-4 overflow-y-auto pb-24">
@@ -1624,12 +1550,10 @@ export default function PosApp() {
                 </div>
             </div>
         )}
-
-        {/* VENTAS (Antes Receipts) */}
+        
+        {/* VENTA (Receipts) */}
         {view === 'receipts' && (
             <div className="p-4 overflow-y-auto pb-24">
-                
-                {/* SECCIÓN EN REPARTO - NUEVO */}
                 <div className="mb-6">
                     <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><Bike className="w-5 h-5 text-orange-500"/> En Reparto / Por Confirmar</h2>
                     <div className="space-y-3">
@@ -1638,34 +1562,17 @@ export default function PosApp() {
                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-orange-500 relative overflow-hidden">
                                 <div className="absolute right-0 top-0 bg-orange-100 text-orange-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase">Lleva: {t.courier}</div>
                                 <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
-                                    <div className="flex justify-between mb-2 mt-1">
-                                        <span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
-                                        <span className="text-xs text-stone-400">{formatDateSimple(t.date.seconds)}</span>
-                                    </div>
-                                    <div className="flex justify-between items-center mb-2">
-                                        <div className="text-xl font-black">${formatMoney(t.total)}</div>
-                                        <span className="text-xs text-stone-500 italic">{t.paymentMethod}</span>
-                                    </div>
+                                    <div className="flex justify-between mb-2 mt-1"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span><span className="text-xs text-stone-400">{formatDateSimple(t.date.seconds)}</span></div>
+                                    <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-xs text-stone-500 italic">{t.paymentMethod}</span></div>
                                 </div>
                                 <div className="flex gap-2 pt-2 border-t">
-                                    <button 
-                                        onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} 
-                                        className="py-2 px-3 bg-red-50 text-red-600 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-red-100 transition-colors"
-                                    >
-                                        <Undo2 className="w-4 h-4"/> No Retiró
-                                    </button>
-                                    <button 
-                                        onClick={(e) => { e.stopPropagation(); handleConfirmDeliveryClick(t); }} 
-                                        className="flex-1 py-2 bg-stone-800 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1 hover:bg-stone-900 transition-colors"
-                                    >
-                                        <Check className="w-4 h-4"/> Confirmar Entrega
-                                    </button>
+                                    <button onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} className="py-2 px-3 bg-red-50 text-red-600 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-red-100 transition-colors"><Undo2 className="w-4 h-4"/> No Retiró</button>
+                                    <button onClick={(e) => { e.stopPropagation(); handleConfirmDeliveryClick(t); }} className="flex-1 py-2 bg-stone-800 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1 hover:bg-stone-900 transition-colors"><Check className="w-4 h-4"/> Confirmar Entrega</button>
                                 </div>
                             </div>
                         ))}
                     </div>
                 </div>
-
                 <div className="mb-6">
                     <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><Clock className="w-5 h-5 text-blue-500"/> Pendientes de Entrega</h2>
                     <div className="space-y-3">
@@ -1675,53 +1582,23 @@ export default function PosApp() {
                             return (
                                 <div key={t.id} className={`p-4 bg-white rounded-xl shadow-sm border border-l-4 ${status === 'ready' ? 'border-l-green-500' : 'border-l-stone-300'}`}>
                                     <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
-                                        <div className="flex justify-between mb-2">
-                                            <span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
-                                            <span className="text-xs text-stone-400">{formatDateSimple(t.date.seconds)}</span>
-                                        </div>
-                                        <div className="flex justify-between items-center mb-2">
-                                            <div className="text-xl font-black">${formatMoney(t.total)}</div>
-                                            {status === 'ready' ? (
-                                                <span className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold uppercase">Disponible</span>
-                                            ) : (
-                                                <span className="text-[10px] bg-stone-100 text-stone-500 px-2 py-1 rounded font-bold uppercase">Falta Stock</span>
-                                            )}
-                                        </div>
+                                        <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span><span className="text-xs text-stone-400">{formatDateSimple(t.date.seconds)}</span></div>
+                                        <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div>{status === 'ready' ? (<span className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold uppercase">Disponible</span>) : (<span className="text-[10px] bg-stone-100 text-stone-500 px-2 py-1 rounded font-bold uppercase">Falta Stock</span>)}</div>
                                     </div>
                                     <div className="flex gap-2 pt-2 border-t">
-                                        {status === 'ready' && (
-                                            <button onClick={() => handleNotifyClient(t)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1">
-                                                <MessageCircle className="w-4 h-4"/> Avisar
-                                            </button>
-                                        )}
-                                        <button onClick={() => handleDeliverOrder(t)} className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 ${status === 'ready' ? 'bg-blue-600 text-white' : 'bg-stone-200 text-stone-400 cursor-not-allowed'}`} disabled={status !== 'ready'}>
-                                            <Truck className="w-4 h-4"/> Despachar
-                                        </button>
-                                        <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg">
-                                            <Trash2 className="w-4 h-4"/>
-                                        </button>
+                                        {status === 'ready' && (<button onClick={() => handleNotifyClient(t)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1"><MessageCircle className="w-4 h-4"/> Avisar</button>)}
+                                        <button onClick={() => handleDeliverOrder(t)} className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 ${status === 'ready' ? 'bg-blue-600 text-white' : 'bg-stone-200 text-stone-400 cursor-not-allowed'}`} disabled={status !== 'ready'}><Truck className="w-4 h-4"/> Despachar</button>
+                                        <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
                                     </div>
                                 </div>
                             );
                         })}
                     </div>
                 </div>
-
                 <div>
                     <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Ventas</h2>
                     <div className="space-y-3">
-                        {filteredSales.completed.slice(0, 10).map(t => (
-                            <div key={t.id} onClick={() => setReceiptDetails(t)} className="p-4 bg-stone-50 rounded-xl shadow-sm border cursor-pointer opacity-75 hover:opacity-100">
-                                <div className="flex justify-between mb-1">
-                                    <span className="font-bold text-sm">{getClientName(t.clientId)}</span>
-                                    <span className="text-xs text-stone-400">{formatDateSimple(t.date.seconds)}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <div className="font-bold">${formatMoney(t.total)}</div>
-                                    <div className="text-xs text-green-600 font-bold">ENTREGADO</div>
-                                </div>
-                            </div>
-                        ))}
+                        {filteredSales.completed.slice(0, 10).map(t => (<div key={t.id} onClick={() => setReceiptDetails(t)} className="p-4 bg-stone-50 rounded-xl shadow-sm border cursor-pointer opacity-75 hover:opacity-100"><div className="flex justify-between mb-1"><span className="font-bold text-sm">{getClientName(t.clientId)}</span><span className="text-xs text-stone-400">{formatDateSimple(t.date.seconds)}</span></div><div className="flex justify-between"><div className="font-bold">${formatMoney(t.total)}</div><div className="text-xs text-green-600 font-bold">ENTREGADO</div></div></div>))}
                     </div>
                 </div>
             </div>
@@ -1738,85 +1615,21 @@ export default function PosApp() {
                     <button onClick={() => setShowPendingOrdersModal(true)} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-bold flex gap-2 items-center shadow-md"><ShoppingBag className="w-4 h-4 text-blue-400"/> Comprar</button>
                   </div>
                 </div>
-                
                 <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
                     {['today', 'yesterday', 'week', 'month'].map(f => (
                         <button key={f} onClick={() => setQuickDate(f)} className="px-4 py-1.5 bg-white border border-stone-200 text-stone-600 rounded-full text-xs font-bold uppercase hover:bg-stone-50 active:bg-stone-100 transition-colors">{f === 'today' ? 'Hoy' : f === 'yesterday' ? 'Ayer' : f === 'week' ? 'Semana' : 'Mes'}</button>
                     ))}
                 </div>
-
-                <div className="bg-white p-3 rounded-xl shadow-sm border border-stone-100 grid grid-cols-2 gap-3">
-                   <div><label className="text-[10px] text-stone-400 font-bold uppercase">Inicio</label><input type="date" className="w-full text-sm p-1 bg-stone-50 rounded border-0" value={reportStartDate} onChange={e => setReportStartDate(e.target.value)} /></div>
-                   <div><label className="text-[10px] text-stone-400 font-bold uppercase">Fin</label><input type="date" className="w-full text-sm p-1 bg-stone-50 rounded border-0" value={reportEndDate} onChange={e => setReportEndDate(e.target.value)} /></div>
-                </div>
-
+                <div className="bg-white p-3 rounded-xl shadow-sm border border-stone-100 grid grid-cols-2 gap-3"><div><label className="text-[10px] text-stone-400 font-bold uppercase">Inicio</label><input type="date" className="w-full text-sm p-1 bg-stone-50 rounded border-0" value={reportStartDate} onChange={e => setReportStartDate(e.target.value)} /></div><div><label className="text-[10px] text-stone-400 font-bold uppercase">Fin</label><input type="date" className="w-full text-sm p-1 bg-stone-50 rounded border-0" value={reportEndDate} onChange={e => setReportEndDate(e.target.value)} /></div></div>
                 <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-orange-500 flex flex-col justify-between h-28">
-                        <div className="flex justify-between items-start"><div className="text-xs font-bold text-stone-400 uppercase tracking-wide">Ventas Netas</div><div className="p-1.5 bg-orange-50 rounded-lg"><Wallet className="w-5 h-5 text-orange-600"/></div></div>
-                        <div className="text-2xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.totalSales)}</div>
-                    </div>
-                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-stone-500 flex flex-col justify-between h-28">
-                        <div className="flex justify-between items-start"><div className="text-xs font-bold text-stone-400 uppercase tracking-wide">Costo (FIFO)</div><div className="p-1.5 bg-stone-50 rounded-lg"><TrendingDown className="w-5 h-5 text-stone-600"/></div></div>
-                        <div className="text-2xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.totalCost)}</div>
-                    </div>
-                    <div className="bg-white p-4 rounded-xl shadow-lg border border-stone-200 col-span-2 flex justify-between items-center h-24 relative overflow-hidden">
-                        <div className="relative z-10"><div className="text-xs font-bold text-stone-500 uppercase tracking-wide mb-1">Margen Real</div><div className="text-4xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.margin)}</div></div>
-                        <div className="relative z-10 flex flex-col items-end"><div className="bg-green-100 text-green-700 px-3 py-1 rounded-lg font-bold text-lg border border-green-200">{reportData.marginPercent.toFixed(1)}%</div></div>
-                        <div className="absolute right-0 bottom-0 opacity-5"><TrendingUp className="w-32 h-32 text-stone-800"/></div>
-                    </div>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-orange-500 flex flex-col justify-between h-28"><div className="flex justify-between items-start"><div className="text-xs font-bold text-stone-400 uppercase tracking-wide">Ventas Netas</div><div className="p-1.5 bg-orange-50 rounded-lg"><Wallet className="w-5 h-5 text-orange-600"/></div></div><div className="text-2xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.totalSales)}</div></div>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-stone-500 flex flex-col justify-between h-28"><div className="flex justify-between items-start"><div className="text-xs font-bold text-stone-400 uppercase tracking-wide">Costo (FIFO)</div><div className="p-1.5 bg-stone-50 rounded-lg"><TrendingDown className="w-5 h-5 text-stone-600"/></div></div><div className="text-2xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.totalCost)}</div></div>
+                    <div className="bg-white p-4 rounded-xl shadow-lg border border-stone-200 col-span-2 flex justify-between items-center h-24 relative overflow-hidden"><div className="relative z-10"><div className="text-xs font-bold text-stone-500 uppercase tracking-wide mb-1">Margen Real</div><div className="text-4xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.margin)}</div></div><div className="relative z-10 flex flex-col items-end"><div className="bg-green-100 text-green-700 px-3 py-1 rounded-lg font-bold text-lg border border-green-200">{reportData.marginPercent.toFixed(1)}%</div></div><div className="absolute right-0 bottom-0 opacity-5"><TrendingUp className="w-32 h-32 text-stone-800"/></div></div>
                 </div>
-
-                <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100">
-                    <h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><BarChart3 className="w-4 h-4 text-stone-400"/> Tendencia Diaria</h3>
-                    <div className="flex items-end gap-2 h-32 pb-2 border-b border-stone-100">
-                        {reportData.timelineData.length === 0 ? <div className="w-full text-center text-xs text-stone-300 self-center">Sin datos en este periodo</div> : 
-                         reportData.timelineData.map((d, i) => {
-                             const maxVal = Math.max(...reportData.timelineData.map(x => x.total));
-                             const heightPct = maxVal > 0 ? (d.total / maxVal) * 100 : 0;
-                             return (
-                                 <div key={i} className="flex-1 h-full flex flex-col items-center justify-end gap-1 group relative">
-                                     <div className="w-full flex-1 flex items-end justify-center relative">
-                                         <div className="w-full bg-orange-500 rounded-t-sm relative hover:bg-orange-600 transition-colors" 
-                                              style={{height: `${Math.max(heightPct, 5)}%`}}>
-                                            <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-stone-800 text-white text-[10px] p-1 rounded whitespace-nowrap z-10 pointer-events-none">
-                                                ${formatMoney(d.total)}
-                                            </div>
-                                         </div>
-                                     </div>
-                                     <div className="text-[9px] text-stone-400 font-medium whitespace-nowrap">{d.date}</div>
-                                 </div>
-                             )
-                          })
-                        }
-                    </div>
-                </div>
-
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100"><h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><BarChart3 className="w-4 h-4 text-stone-400"/> Tendencia Diaria</h3><div className="flex items-end gap-2 h-32 pb-2 border-b border-stone-100">{reportData.timelineData.length === 0 ? <div className="w-full text-center text-xs text-stone-300 self-center">Sin datos en este periodo</div> : reportData.timelineData.map((d, i) => { const maxVal = Math.max(...reportData.timelineData.map(x => x.total)); const heightPct = maxVal > 0 ? (d.total / maxVal) * 100 : 0; return (<div key={i} className="flex-1 h-full flex flex-col items-center justify-end gap-1 group relative"><div className="w-full flex-1 flex items-end justify-center relative"><div className="w-full bg-orange-500 rounded-t-sm relative hover:bg-orange-600 transition-colors" style={{height: `${Math.max(heightPct, 5)}%`}}><div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-stone-800 text-white text-[10px] p-1 rounded whitespace-nowrap z-10 pointer-events-none">${formatMoney(d.total)}</div></div></div><div className="text-[9px] text-stone-400 font-medium whitespace-nowrap">{d.date}</div></div>)})}</div></div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100">
-                        <h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><Package className="w-4 h-4 text-stone-400"/> Top Productos</h3>
-                        <div className="space-y-3">
-                            {reportData.productRanking.length === 0 && <div className="text-xs text-stone-400 text-center py-4">Sin ventas</div>}
-                            {reportData.productRanking.map((p,i) => (
-                                <div key={i} className="flex justify-between items-center text-sm border-b border-stone-50 last:border-0 pb-2">
-                                    <div className="flex items-center gap-3"><div className="w-6 h-6 rounded-full bg-stone-100 flex items-center justify-center text-xs font-bold text-stone-500">{i + 1}</div><div className="font-medium text-stone-700 line-clamp-1">{p.name}</div></div>
-                                    <div className="text-right"><div className="font-bold text-stone-800">${formatMoney(p.revenue)}</div><div className="text-[10px] text-stone-400">{p.qty} un.</div></div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100">
-                        <h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><Users className="w-4 h-4 text-stone-400"/> Top Clientes</h3>
-                        <div className="space-y-3">
-                            {reportData.clientRanking.length === 0 && <div className="text-xs text-stone-400 text-center py-4">Sin datos</div>}
-                            {reportData.clientRanking.map((c,i) => (
-                                <div key={i} className="flex justify-between items-center text-sm border-b border-stone-50 last:border-0 pb-2">
-                                    <div className="flex items-center gap-3"><div className="w-6 h-6 rounded-full bg-stone-100 flex items-center justify-center text-xs font-bold text-stone-500">{i + 1}</div><div className="font-medium text-stone-700 line-clamp-1">{c.name}</div></div>
-                                    <div className="text-right"><div className="font-bold text-stone-800">${formatMoney(c.total)}</div><div className="text-[10px] text-stone-400">{c.count} compras</div></div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
+                    <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100"><h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><Package className="w-4 h-4 text-stone-400"/> Top Productos</h3><div className="space-y-3">{reportData.productRanking.length === 0 && <div className="text-xs text-stone-400 text-center py-4">Sin ventas</div>}{reportData.productRanking.map((p,i) => (<div key={i} className="flex justify-between items-center text-sm border-b border-stone-50 last:border-0 pb-2"><div className="flex items-center gap-3"><div className="w-6 h-6 rounded-full bg-stone-100 flex items-center justify-center text-xs font-bold text-stone-500">{i + 1}</div><div className="font-medium text-stone-700 line-clamp-1">{p.name}</div></div><div className="text-right"><div className="font-bold text-stone-800">${formatMoney(p.revenue)}</div><div className="text-[10px] text-stone-400">{p.qty} un.</div></div></div>))}</div></div>
+                    <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100"><h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><Users className="w-4 h-4 text-stone-400"/> Top Clientes</h3><div className="space-y-3">{reportData.clientRanking.length === 0 && <div className="text-xs text-stone-400 text-center py-4">Sin datos</div>}{reportData.clientRanking.map((c,i) => (<div key={i} className="flex justify-between items-center text-sm border-b border-stone-50 last:border-0 pb-2"><div className="flex items-center gap-3"><div className="w-6 h-6 rounded-full bg-stone-100 flex items-center justify-center text-xs font-bold text-stone-500">{i + 1}</div><div className="font-medium text-stone-700 line-clamp-1">{c.name}</div></div><div className="text-right"><div className="font-bold text-stone-800">${formatMoney(c.total)}</div><div className="text-[10px] text-stone-400">{c.count} compras</div></div></div>))}</div></div>
                 </div>
             </div>
         )}
@@ -1831,9 +1644,396 @@ export default function PosApp() {
 
       </main>
 
-      {/* --- MODALS (RESTAURADOS) --- */}
+      {/* --- NUEVO CHECKOUT MODAL MODERNO --- */}
+      {isCheckoutModalOpen && (
+          <div className="fixed inset-0 bg-stone-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden scale-100">
+                  
+                  {/* Modal Header */}
+                  <div className="px-6 py-4 border-b border-stone-100 flex justify-between items-center bg-white z-10">
+                      <div>
+                          <h2 className="font-black text-xl text-stone-800 tracking-tight">Finalizar Pedido</h2>
+                          <p className="text-xs text-stone-400 font-medium">Completa la información para registrar la venta</p>
+                      </div>
+                      <button onClick={() => setIsCheckoutModalOpen(false)} className="p-2 bg-stone-50 hover:bg-stone-100 rounded-full transition-colors">
+                          <X className="w-5 h-5 text-stone-500"/>
+                      </button>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto p-6 space-y-8">
+                      
+                      {/* SECCIÓN 1: CLIENTE */}
+                      <div>
+                          <div className="flex items-center gap-2 mb-3">
+                              <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">1</div>
+                              <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Cliente</h3>
+                          </div>
+                          
+                          <div className="relative" ref={clientInputRef}>
+                              <div className="relative">
+                                  <UserPlus className="absolute left-4 top-3.5 w-5 h-5 text-stone-400"/>
+                                  <input 
+                                      className="w-full pl-11 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl font-medium text-stone-800 focus:ring-2 focus:ring-stone-900 focus:border-transparent outline-none transition-all placeholder:text-stone-400" 
+                                      placeholder="Buscar o seleccionar cliente..." 
+                                      value={clientSearchTerm} 
+                                      onChange={e => { setClientSearchTerm(e.target.value); setShowClientOptions(true); }}
+                                      onFocus={() => setShowClientOptions(true)}
+                                  />
+                                  {selectedClient && (
+                                      <div className="absolute right-2 top-2 bottom-2 flex items-center">
+                                          <span className="bg-green-100 text-green-700 text-xs font-bold px-2 py-1 rounded-lg flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Seleccionado</span>
+                                      </div>
+                                  )}
+                              </div>
+                              
+                              {showClientOptions && (
+                                  <div className="absolute top-full left-0 w-full bg-white border border-stone-100 rounded-xl shadow-xl max-h-48 overflow-y-auto z-20 mt-2 p-2">
+                                      <button onClick={() => {setIsClientModalOpen(true); setShowClientOptions(false);}} className="w-full p-3 text-left text-blue-600 font-bold hover:bg-blue-50 rounded-lg flex items-center gap-2"><Plus className="w-4 h-4"/> Crear Nuevo Cliente</button>
+                                      {filteredClientsForSearch.map(c => (
+                                          <div key={c.id} className="p-3 hover:bg-stone-50 cursor-pointer rounded-lg transition-colors flex justify-between items-center group" onClick={() => {
+                                              setSelectedClient(c.id);
+                                              setClientSearchTerm(c.name);
+                                              setShowClientOptions(false);
+                                          }}>
+                                              <div>
+                                                  <div className="font-bold text-stone-800">{c.name}</div>
+                                                  <div className="text-xs text-stone-400">{c.phone}</div>
+                                              </div>
+                                              <ChevronRight className="w-4 h-4 text-stone-300 group-hover:text-stone-600"/>
+                                          </div>
+                                      ))}
+                                  </div>
+                              )}
+                          </div>
+                      </div>
 
-      {/* Modal Por Vencer */}
+                      {/* SECCIÓN 2: TIPO DE ENTREGA */}
+                      <div className={!selectedClient ? 'opacity-40 pointer-events-none grayscale transition-all' : 'transition-all'}>
+                          <div className="flex items-center gap-2 mb-3">
+                              <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">2</div>
+                              <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Tipo de Entrega</h3>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4">
+                              <button 
+                                  onClick={() => setDeliveryType('immediate')} 
+                                  className={`relative p-4 rounded-2xl border-2 flex flex-col items-center gap-3 transition-all group ${deliveryType === 'immediate' ? 'border-orange-500 bg-orange-50/50' : 'border-stone-100 bg-white hover:border-stone-300'}`}
+                              >
+                                  <div className={`p-3 rounded-full ${deliveryType === 'immediate' ? 'bg-orange-100 text-orange-600' : 'bg-stone-100 text-stone-400'}`}>
+                                      <PackageCheck className="w-6 h-6"/>
+                                  </div>
+                                  <div className="text-center">
+                                      <span className={`block font-bold ${deliveryType === 'immediate' ? 'text-orange-900' : 'text-stone-600'}`}>Entrega Inmediata</span>
+                                      <span className="text-[10px] text-stone-400 font-medium">Valida stock disponible</span>
+                                  </div>
+                                  {deliveryType === 'immediate' && <div className="absolute top-3 right-3 w-3 h-3 bg-orange-500 rounded-full"></div>}
+                              </button>
+
+                              <button 
+                                  onClick={() => setDeliveryType('order')} 
+                                  className={`relative p-4 rounded-2xl border-2 flex flex-col items-center gap-3 transition-all group ${deliveryType === 'order' ? 'border-blue-500 bg-blue-50/50' : 'border-stone-100 bg-white hover:border-stone-300'}`}
+                              >
+                                  <div className={`p-3 rounded-full ${deliveryType === 'order' ? 'bg-blue-100 text-blue-600' : 'bg-stone-100 text-stone-400'}`}>
+                                      <Clock className="w-6 h-6"/>
+                                  </div>
+                                  <div className="text-center">
+                                      <span className={`block font-bold ${deliveryType === 'order' ? 'text-blue-900' : 'text-stone-600'}`}>Por Encargo</span>
+                                      <span className="text-[10px] text-stone-400 font-medium">Se pedirá en ciclo</span>
+                                  </div>
+                                  {deliveryType === 'order' && <div className="absolute top-3 right-3 w-3 h-3 bg-blue-500 rounded-full"></div>}
+                              </button>
+                          </div>
+
+                          {/* Validación Stock Visual Compacta */}
+                          {deliveryType === 'immediate' && (
+                              <div className="mt-4 bg-stone-50 rounded-xl p-3 border border-stone-100">
+                                  <div className="text-xs font-bold text-stone-400 uppercase mb-2 flex justify-between"><span>Verificación Stock</span> <span>{(cart || []).length} items</span></div>
+                                  <div className="space-y-2 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                                      {(cart || []).map(item => {
+                                          const prod = products.find(p => p.id === item.id);
+                                          const hasStock = prod && prod.stock >= item.qty;
+                                          return (
+                                              <div key={item.id} className="flex justify-between items-center text-xs">
+                                                  <span className={`truncate flex-1 ${!hasStock ? 'text-red-500 font-bold' : 'text-stone-600'}`}>{item.name}</span>
+                                                  <div className="flex items-center gap-2">
+                                                      <span className="text-stone-400">{item.qty} / {prod?.stock||0}</span>
+                                                      {hasStock ? <CheckCircle2 className="w-3 h-3 text-green-500"/> : <XCircle className="w-3 h-3 text-red-500"/>}
+                                                  </div>
+                                              </div>
+                                          )
+                                      })}
+                                  </div>
+                              </div>
+                          )}
+                      </div>
+
+                      {/* SECCIÓN 3: PLAN DE PAGO */}
+                      <div className={!selectedClient ? 'opacity-40 pointer-events-none grayscale transition-all' : 'transition-all'}>
+                          <div className="flex items-center gap-2 mb-3">
+                              <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">3</div>
+                              <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Plan de Pago</h3>
+                          </div>
+                          
+                          <div className="bg-stone-100 p-1.5 rounded-xl flex mb-6">
+                              {['full', 'deposit', 'installments'].map(type => (
+                                  <button 
+                                      key={type}
+                                      onClick={() => setPaymentPlanType(type)}
+                                      className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-all ${paymentPlanType === type ? 'bg-white text-stone-900 shadow-sm ring-1 ring-stone-200' : 'text-stone-500 hover:text-stone-700'}`}
+                                  >
+                                      {type === 'full' ? 'Pago Completo' : type === 'deposit' ? 'Abono' : 'Cuotas'}
+                                  </button>
+                              ))}
+                          </div>
+
+                          {/* Dynamic Content based on Payment Plan */}
+                          <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                              
+                              {/* PAGO COMPLETO */}
+                              {paymentPlanType === 'full' && (
+                                  <div className="bg-stone-50 rounded-2xl p-6 border border-stone-200 text-center">
+                                      <div className="text-stone-500 text-xs font-bold uppercase mb-1">Total a Pagar</div>
+                                      <div className="text-4xl font-black text-stone-800 mb-2">${formatMoney(cartTotal)}</div>
+                                      <div className="text-xs text-stone-400 bg-white inline-block px-3 py-1 rounded-full border border-stone-100">
+                                          El pago se registrará en Finanzas
+                                      </div>
+                                  </div>
+                              )}
+
+                              {/* ABONO */}
+                              {paymentPlanType === 'deposit' && (
+                                  <div className="space-y-4">
+                                      <div>
+                                          <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Monto Abono / Pie</label>
+                                          <div className="relative">
+                                              <span className="absolute left-4 top-3.5 text-stone-400 font-bold">$</span>
+                                              <input 
+                                                  type="number" 
+                                                  className="w-full pl-8 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl font-bold text-stone-800 focus:ring-2 focus:ring-stone-900 outline-none" 
+                                                  value={checkoutData.downPayment}
+                                                  onChange={e => setCheckoutData({...checkoutData, downPayment: e.target.value})}
+                                                  placeholder="0"
+                                              />
+                                          </div>
+                                      </div>
+                                      
+                                      {/* Mostrar selector de medio de pago SIEMPRE si hay monto > 0 */}
+                                      {(checkoutData.downPayment > 0) && (
+                                          <div>
+                                              <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Medio de Pago (Abono)</label>
+                                              <select className="w-full p-3 bg-white border border-stone-200 rounded-xl text-sm font-medium outline-none focus:border-stone-400" value={checkoutData.paymentMethod} onChange={e => setCheckoutData({...checkoutData, paymentMethod: e.target.value})}>
+                                                  <option value="">Seleccionar...</option>
+                                                  <option value="Efectivo">Efectivo</option>
+                                                  <option value="Transferencia">Transferencia</option>
+                                              </select>
+                                          </div>
+                                      )}
+
+                                      <div className="flex justify-between items-center p-4 bg-red-50 rounded-xl border border-red-100">
+                                          <span className="text-red-800 font-bold text-sm">Saldo Restante</span>
+                                          <span className="text-red-600 font-black text-xl">${formatMoney(Math.max(0, cartTotal - Number(checkoutData.downPayment)))}</span>
+                                      </div>
+                                  </div>
+                              )}
+
+                              {/* CUOTAS */}
+                              {paymentPlanType === 'installments' && (
+                                  <div className="space-y-4">
+                                      <div className="grid grid-cols-2 gap-4">
+                                          <div>
+                                              <label className="block text-xs font-bold uppercase text-stone-500 mb-2">N° Cuotas</label>
+                                              <select className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl font-bold outline-none" value={checkoutData.installmentsCount} onChange={e => setCheckoutData({...checkoutData, installmentsCount: e.target.value})}>
+                                                  {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
+                                              </select>
+                                          </div>
+                                          <div>
+                                              <label className="block text-xs font-bold uppercase text-stone-500 mb-2">1er Pago</label>
+                                              <input type="date" className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl font-medium text-xs outline-none" value={checkoutData.firstPaymentDate} onChange={e => setCheckoutData({...checkoutData, firstPaymentDate: e.target.value})} />
+                                          </div>
+                                      </div>
+                                      
+                                      <div className="bg-white border border-stone-100 rounded-xl overflow-hidden shadow-sm">
+                                          <div className="bg-stone-50 px-4 py-2 border-b border-stone-100 text-xs font-bold text-stone-500 uppercase">Proyección de Pagos</div>
+                                          <div className="divide-y divide-stone-50">
+                                              {calculatePaymentSchedule(cartTotal, 'installments', checkoutData).map((p, i) => (
+                                                  <div key={i} className="px-4 py-3 flex justify-between items-center">
+                                                      <div className="flex items-center gap-3">
+                                                          <div className="w-6 h-6 rounded-full bg-stone-100 text-stone-500 flex items-center justify-center text-[10px] font-bold">{i+1}</div>
+                                                          <span className="text-sm font-medium text-stone-700">{new Date(p.date * 1000).toLocaleDateString()}</span>
+                                                      </div>
+                                                      <span className="font-bold text-stone-800">${formatMoney(p.amount)}</span>
+                                                  </div>
+                                              ))}
+                                          </div>
+                                      </div>
+                                  </div>
+                              )}
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* Footer Actions */}
+                  <div className="p-6 border-t border-stone-100 bg-white z-10">
+                      <button 
+                          onClick={handleConfirmCheckout} 
+                          className="w-full py-4 bg-stone-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-stone-200 hover:bg-stone-800 hover:scale-[1.01] active:scale-[0.98] transition-all flex justify-between px-8 items-center group"
+                      >
+                          <span>Confirmar Pedido</span>
+                          <div className="flex items-center gap-3">
+                              <span className="opacity-50">|</span>
+                              <span>${formatMoney(cartTotal)}</span>
+                              <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform"/>
+                          </div>
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- FINANZAS: MODAL DE PAGO --- */}
+      {paymentModalOpen && selectedPaymentTx && (
+          <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
+                  <div className="p-5 bg-emerald-600 text-white relative overflow-hidden">
+                      <div className="relative z-10">
+                          <h2 className="font-bold text-xl">Registrar Pago</h2>
+                          <div className="text-sm opacity-90 font-medium">{getClientName(selectedPaymentTx.clientId)}</div>
+                      </div>
+                      <DollarSign className="absolute -right-4 -bottom-8 w-32 h-32 text-emerald-500 opacity-50 rotate-12"/>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto p-5">
+                      <div className="mb-6 space-y-3">
+                          {(selectedPaymentTx.paymentSchedule || []).map((item, idx) => (
+                              <div 
+                                  key={idx} 
+                                  onClick={() => {
+                                      if (item.status === 'paid') return;
+                                      setSelectedPaymentIndex(idx);
+                                      setPaymentAmountInput(item.amount);
+                                  }}
+                                  className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex justify-between items-center group 
+                                      ${item.status === 'paid' 
+                                          ? 'bg-emerald-50 border-emerald-100 opacity-80 cursor-default' 
+                                          : selectedPaymentIndex === idx 
+                                              ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-100' 
+                                              : 'bg-white border-stone-100 hover:border-emerald-200'
+                                      }`}
+                              >
+                                  <div>
+                                      <div className="font-bold text-sm text-stone-800">
+                                          {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : (item.type === 'total' ? 'Pago Total' : 'Saldo Pendiente')}
+                                      </div>
+                                      <div className="text-xs text-stone-500 mt-0.5">
+                                          {item.date ? new Date(item.date * 1000).toLocaleDateString() : 'Fecha abierta'}
+                                      </div>
+                                      {/* Mostrar link a comprobante si existe */}
+                                      {item.receiptUrl && (
+                                          <a href={item.receiptUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[10px] text-blue-500 flex items-center gap-1 mt-1 hover:underline">
+                                              <ExternalLink className="w-3 h-3"/> Ver Comprobante
+                                          </a>
+                                      )}
+                                  </div>
+                                  <div className="text-right">
+                                      <div className={`font-black ${item.status === 'paid' ? 'text-emerald-700' : 'text-stone-800'}`}>${formatMoney(item.amount)}</div>
+                                      <div className={`text-[9px] uppercase font-bold mt-1 px-2 py-0.5 rounded-full inline-block ${item.status === 'paid' ? 'bg-emerald-200 text-emerald-800' : 'bg-stone-100 text-stone-400'}`}>{item.status === 'paid' ? 'Pagado' : 'Pendiente'}</div>
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
+
+                      {selectedPaymentIndex !== null && (
+                          <div className="bg-stone-50 p-5 rounded-2xl border border-stone-100 animate-in slide-in-from-bottom-4 duration-300">
+                              <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Monto a Pagar</label>
+                              <div className="relative mb-4">
+                                  <span className="absolute left-4 top-3.5 text-stone-400 font-bold text-lg">$</span>
+                                  <input 
+                                      type="number" 
+                                      className="w-full pl-8 pr-4 py-3 border border-stone-200 rounded-xl text-2xl font-black text-stone-800 text-center focus:border-emerald-500 outline-none transition-colors" 
+                                      value={paymentAmountInput}
+                                      onChange={e => setPaymentAmountInput(e.target.value)}
+                                      placeholder="0"
+                                  />
+                              </div>
+                              
+                              <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago</label>
+                              <select className="w-full p-3 border border-stone-200 rounded-xl mb-4 bg-white text-sm font-bold text-stone-700 outline-none focus:border-emerald-500" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
+                                  <option value="Efectivo">Efectivo</option>
+                                  <option value="Transferencia">Transferencia</option>
+                                  <option value="Debito">Débito</option>
+                              </select>
+
+                              <div className="relative border-2 border-dashed border-stone-300 rounded-xl p-4 text-center text-stone-400 cursor-pointer hover:bg-white hover:border-emerald-400 hover:text-emerald-600 transition-all group">
+                                  <input 
+                                      type="file" 
+                                      accept="image/*"
+                                      onChange={(e) => setPaymentReceiptFile(e.target.files[0])}
+                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                  />
+                                  <Upload className={`w-6 h-6 mx-auto mb-2 ${paymentReceiptFile ? 'text-emerald-500' : ''}`}/>
+                                  <span className={`text-xs font-bold block ${paymentReceiptFile ? 'text-emerald-600' : ''}`}>{paymentReceiptFile ? "Archivo Seleccionado" : "Subir Comprobante"}</span>
+                                  <span className="text-[10px] opacity-70">{paymentReceiptFile ? paymentReceiptFile.name : "(Opcional)"}</span>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+
+                  <div className="p-5 border-t bg-white flex flex-col gap-3">
+                      {selectedPaymentIndex !== null ? (
+                          <button onClick={handleRegisterPayment} className="w-full py-3.5 bg-emerald-600 text-white font-bold rounded-xl shadow-lg shadow-emerald-200 active:scale-[0.98] transition-all">
+                              Confirmar Pago
+                          </button>
+                      ) : (
+                          <div className="text-center text-xs text-stone-400 font-medium py-2">Selecciona una cuota para pagar</div>
+                      )}
+                      <button onClick={() => { setPaymentModalOpen(false); setSelectedPaymentTx(null); setPaymentReceiptFile(null); }} className="w-full py-3 text-stone-400 font-bold text-sm hover:text-stone-600 transition-colors">
+                          Cancelar
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- RESTAURACIÓN: MODAL DESPACHO/ENTREGA --- */}
+      {isDeliveryModalOpen && deliveryTransaction && (
+        <div className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4">
+            <div className="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl">
+                <h2 className="text-xl font-bold text-center mb-4">Preparar Entrega</h2>
+                <div className="text-3xl font-black text-center mb-6">${formatMoney(deliveryTransaction.total)}</div>
+                
+                <div className="mb-6">
+                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">¿Quién entrega?</label>
+                    <div className="space-y-2">
+                        {COURIERS.map(courier => (
+                            <button 
+                                key={courier} 
+                                onClick={() => setSelectedCourier(courier)}
+                                className={`w-full p-3 rounded-xl font-bold text-left flex items-center gap-3 border-2 transition-all ${selectedCourier === courier ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-stone-100 bg-white text-stone-600'}`}
+                            >
+                                {courier === 'Yo (Directo)' ? <CheckCircle2 className="w-5 h-5"/> : <Bike className="w-5 h-5"/>}
+                                {courier}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="mb-6">
+                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">Medio de Pago (Estimado)</label>
+                    <div className="grid grid-cols-2 gap-3">
+                        <button onClick={() => setDeliveryPaymentMethod('Efectivo')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Efectivo' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Efectivo</button>
+                        <button onClick={() => setDeliveryPaymentMethod('Transferencia')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Transferencia' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Transf.</button>
+                    </div>
+                </div>
+
+                <button onClick={startDeliveryProcess} className={`w-full py-3 text-white font-bold rounded-xl ${selectedCourier === 'Yo (Directo)' ? 'bg-green-600' : 'bg-stone-800'}`}>
+                    {selectedCourier === 'Yo (Directo)' ? 'Confirmar y Cerrar Venta' : 'Enviar a Reparto (Descontar Stock)'}
+                </button>
+                <button onClick={() => setIsDeliveryModalOpen(false)} className="w-full mt-2 py-3 text-stone-400">Cancelar</button>
+            </div>
+        </div>
+      )}
+
+      {/* --- RESTAURACIÓN: MODAL POR VENCER --- */}
       {showExpiringModal && (
         <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -1866,7 +2066,25 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* Modal Por Comprar (Pendientes) */}
+      {/* --- RESTAURACIÓN: MODAL STOCK (ALERT) --- */}
+      {showStockAlertModal && (
+          <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+                  <div className="p-4 border-b bg-stone-50 flex justify-between items-center">
+                      <h2 className="font-bold text-lg flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-orange-500"/> Alerta de Stock</h2>
+                      <button onClick={() => setShowStockAlertModal(false)}><X className="w-5 h-5 text-stone-400"/></button>
+                  </div>
+                  <div className="p-6 text-center">
+                      <p className="text-stone-600 mb-4">¿Deseas generar un reporte de los productos con stock bajo?</p>
+                      <div className="space-y-3">
+                          <button onClick={() => handleSendStockReport(reportPhones.phone1)} className="w-full py-3 bg-green-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"><MessageCircle className="w-5 h-5"/> Enviar a WhatsApp (Principal)</button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- RESTAURACIÓN: MODAL PENDING ORDERS (COMPRAR) --- */}
       {showPendingOrdersModal && (
         <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -1895,6 +2113,21 @@ export default function PosApp() {
                 </div>
             </div>
         </div>
+      )}
+
+      {/* MODAL CREAR CLIENTE (Reutilizable) */}
+      {isClientModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+              <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
+                  <h2 className="font-bold text-lg mb-4">Nuevo Cliente</h2>
+                  <form onSubmit={handleSaveClient}>
+                      <input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/>
+                      <input name="phone" className="w-full p-3 border rounded-xl mb-4" placeholder="Teléfono"/>
+                      <button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button>
+                  </form>
+                  <button onClick={() => setIsClientModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button>
+              </div>
+          </div>
       )}
 
       {/* MODAL HISTORIAL (KARDEX) */}
@@ -1936,7 +2169,7 @@ export default function PosApp() {
 
       {/* MODAL RECIBO */}
       {receiptDetails && (
-        <div className="fixed inset-0 bg-black/60 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
             <div className="bg-white w-full max-w-md h-[80vh] sm:h-auto sm:max-h-[85vh] sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
                 <div className="p-5 border-b flex justify-between items-center bg-stone-50">
                     <h2 className="font-bold text-lg flex items-center gap-2"><Receipt className="w-5 h-5"/> Detalle {receiptDetails.type === 'purchase' ? 'Recepción' : 'Venta'}</h2>
@@ -1948,7 +2181,6 @@ export default function PosApp() {
                         <div className="text-4xl font-black">${formatMoney(receiptDetails.total)}</div>
                     </div>
                     
-                    {/* INFO DETALLADA DEL ENVÍO/PAGO */}
                     {receiptDetails.type === 'sale' && (
                         <div className="bg-stone-50 p-3 rounded-xl border mb-4 text-xs space-y-1">
                             <div className="flex justify-between"><span>Repartidor:</span> <span className="font-bold">{receiptDetails.courier || 'No registrado'}</span></div>
@@ -1958,7 +2190,6 @@ export default function PosApp() {
                         </div>
                     )}
 
-                    {/* INFO FINANCIERA (Solo venta entregada) */}
                     {receiptDetails.type === 'sale' && receiptDetails.saleStatus === 'completed' && receiptDetails.totalCost > 0 && (
                         <div className="bg-stone-50 p-4 rounded-xl border mb-4 space-y-2">
                             <div className="flex justify-between text-xs text-stone-500"><span>Costo Mercadería (FIFO Exacto)</span><span>${formatMoney(receiptDetails.totalCost)}</span></div>
@@ -1966,7 +2197,7 @@ export default function PosApp() {
                         </div>
                     )}
                     <div className="space-y-3">
-                        {receiptDetails.items.map((item, idx) => (
+                        {(receiptDetails.items || []).map((item, idx) => (
                             <div key={idx} className="py-2 border-b border-dashed last:border-0">
                                 <div className="flex justify-between">
                                     <div className="text-sm"><span className="font-bold">{item.qty}x</span> {item.name}</div>
@@ -1975,8 +2206,7 @@ export default function PosApp() {
                                 {receiptDetails.type === 'purchase' ? (
                                      <div className="text-[10px] text-stone-400">Costo unitario: ${formatMoney(item.transactionPrice)}</div>
                                 ) : (
-                                    /* Desglose FIFO solo en ventas */
-                                    item.fifoDetails && item.fifoDetails.map((detail, dIdx) => (
+                                    (item.fifoDetails || []).map((detail, dIdx) => (
                                         <div key={dIdx} className="text-[10px] text-stone-500 pl-2 mt-1">
                                         - {detail.qty} un. del {formatDateSimple(detail.date)} a costo ${formatMoney(detail.cost)} c/u
                                         </div>
@@ -1985,7 +2215,6 @@ export default function PosApp() {
                             </div>
                         ))}
                     </div>
-                    {/* Si es pendiente, permitimos entregar solo si hay stock (validado en el handler) */}
                     {receiptDetails.saleStatus === 'pending' && (
                         <button 
                             onClick={() => handleDeliverOrder(receiptDetails)} 
@@ -2043,50 +2272,8 @@ export default function PosApp() {
       
       {isCycleModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Ciclo</h2><form onSubmit={e => { e.preventDefault(); simpleSave('cycles', {name: new FormData(e.currentTarget).get('name')}, setIsCycleModalOpen); }}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsCycleModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
 
-      {isClientModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Cliente</h2><form onSubmit={handleSaveClient}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><input name="phone" className="w-full p-3 border rounded-xl mb-4" placeholder="Teléfono"/><button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsClientModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
-
       {isSupplierModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Proveedor</h2><form onSubmit={handleSaveSupplier}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-stone-800 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsSupplierModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
 
-      {/* MODAL ENTREGA / DESPACHO */}
-      {isDeliveryModalOpen && deliveryTransaction && (
-        <div className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4">
-            <div className="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl">
-                <h2 className="text-xl font-bold text-center mb-4">Preparar Entrega</h2>
-                <div className="text-3xl font-black text-center mb-6">${formatMoney(deliveryTransaction.total)}</div>
-                
-                <div className="mb-6">
-                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">¿Quién entrega?</label>
-                    <div className="space-y-2">
-                        {COURIERS.map(courier => (
-                            <button 
-                                key={courier} 
-                                onClick={() => setSelectedCourier(courier)}
-                                className={`w-full p-3 rounded-xl font-bold text-left flex items-center gap-3 border-2 transition-all ${selectedCourier === courier ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-stone-100 bg-white text-stone-600'}`}
-                            >
-                                {courier === 'Yo (Directo)' ? <CheckCircle2 className="w-5 h-5"/> : <Bike className="w-5 h-5"/>}
-                                {courier}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                <div className="mb-6">
-                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">Medio de Pago (Estimado)</label>
-                    <div className="grid grid-cols-2 gap-3">
-                        <button onClick={() => setDeliveryPaymentMethod('Efectivo')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Efectivo' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Efectivo</button>
-                        <button onClick={() => setDeliveryPaymentMethod('Transferencia')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Transferencia' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Transf.</button>
-                    </div>
-                </div>
-
-                <button onClick={startDeliveryProcess} className={`w-full py-3 text-white font-bold rounded-xl ${selectedCourier === 'Yo (Directo)' ? 'bg-green-600' : 'bg-stone-800'}`}>
-                    {selectedCourier === 'Yo (Directo)' ? 'Confirmar y Cerrar Venta' : 'Enviar a Reparto (Descontar Stock)'}
-                </button>
-                <button onClick={() => setIsDeliveryModalOpen(false)} className="w-full mt-2 py-3 text-stone-400">Cancelar</button>
-            </div>
-        </div>
-      )}
-
-      {/* MODAL CATALOGO */}
       {showCatalogModal && (
           <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
               <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
@@ -2102,19 +2289,18 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* MODAL PRE-TICKET (Mensaje para compartir detalle) */}
       {showPreTicket && (
           <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
               <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
                   <h2 className="text-lg font-bold mb-2">Compartir Detalle</h2>
                   <p className="text-sm text-stone-500 mb-4">Se copiará al portapapeles o abrirá WhatsApp.</p>
                   <div className="bg-stone-100 p-3 rounded-lg text-xs font-mono mb-4 max-h-40 overflow-y-auto">
-                      {cart.map(i => `${i.name} x${i.qty} ($${formatMoney(i.price)})`).join('\n')}
+                      {(cart || []).map(i => `${i.name} x${i.qty} ($${formatMoney(i.price)})`).join('\n')}
                       {'\n'}Total: ${formatMoney(cartTotal)}
                   </div>
                   <div className="flex gap-2">
                       <button onClick={() => {
-                          const text = `Hola! Aquí el detalle:\n${cart.map(i => `- ${i.name} x${i.qty}`).join('\n')}\nTotal: $${formatMoney(cartTotal)}`;
+                          const text = `Hola! Aquí el detalle:\n${(cart || []).map(i => `- ${i.name} x${i.qty}`).join('\n')}\nTotal: $${formatMoney(cartTotal)}`;
                           window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
                           setShowPreTicket(false);
                       }} className="flex-1 py-2 bg-green-500 text-white rounded-xl font-bold">WhatsApp</button>
@@ -2124,10 +2310,10 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- MODAL DE CONFIRMACIÓN FECHA ENTREGA DIFERIDA --- */}
+      {/* --- CONFIRMAR ENTREGA MODAL --- */}
       {confirmDeliveryModal.show && confirmDeliveryModal.transaction && (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl text-center">
                 <h3 className="text-lg font-bold mb-2 text-stone-800">Confirmar Entrega</h3>
                 <p className="text-sm text-stone-600 mb-4">
                     {confirmDeliveryModal.transaction.courier} ya entregó el pedido. 
@@ -2164,10 +2350,10 @@ export default function PosApp() {
       <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 pb-safe-bottom z-30 shadow-lg">
         <NavButton icon={<LayoutDashboard />} label="Reportes" active={view === 'reports'} onClick={() => setView('reports')} />
         <NavButton icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => setView('pos')} />
-        {/* PEDIDOS (Antes Abastecimiento) */}
-        <NavButton icon={<ShoppingBag />} label="Pedidos" active={view === 'purchases'} onClick={() => { setView('purchases'); setShowPurchaseHistory(false); setPurchaseMode(null); setOrderSource(null); }} />
-        {/* VENTAS (Antes Pedidos) */}
+        <NavButton icon={<ShoppingBag />} label="Pedidos" active={view === 'purchases'} onClick={() => setView('purchases')} />
         <NavButton icon={<Receipt />} label="Ventas" active={view === 'receipts'} onClick={() => setView('receipts')} />
+        {/* NEW FINANCE BUTTON */}
+        <NavButton icon={<DollarSign />} label="Finanzas" active={view === 'finances'} onClick={() => setView('finances')} />
         <NavButton icon={<Package />} label="Stock" active={view === 'inventory'} onClick={() => setView('inventory')} />
       </nav>
     </div>
