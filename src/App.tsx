@@ -70,6 +70,7 @@ import {
   getFirestore, 
   collection, 
   addDoc, 
+  setDoc, 
   updateDoc, 
   deleteDoc, 
   doc, 
@@ -198,6 +199,7 @@ export default function PosApp() {
   // Estados Pedido
   // NUEVO: Estados para el flujo de "Pedidos" (Compras)
   const [orderSource, setOrderSource] = useState(null); // 'web' | 'catalog'
+  const [catalogBrand, setCatalogBrand] = useState(''); // NUEVO: Para guardar la marca del catalogo
   const [installmentInfo, setInstallmentInfo] = useState({ isInstallments: false, count: 1 });
   // Recepción
   const [checkInOrder, setCheckInOrder] = useState(null); 
@@ -715,6 +717,8 @@ export default function PosApp() {
       setOriginalBatchesMap({}); 
       setIsImmediateSale(false);
       setOrderSource(null);
+      setCatalogBrand(''); // Reset catalog brand
+      setSelectedCycle(''); // Reset selected cycle
       setInstallmentInfo({ isInstallments: false, count: 1 });
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
@@ -745,16 +749,18 @@ export default function PosApp() {
         const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
         const now = new Date();
 
-        await addDoc(collection(db, `artifacts/${APP_ID}/public/data/transactions`), {
+        // FIX: USAR setDoc para asegurar que el ID del documento sea newTransId
+        await setDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), {
             id: newTransId,
             type: 'order', // Nuevo tipo 'order' para diferenciar de 'purchase' (completado)
             items: [...cart],
             total: cartTotal,
-            clientId: selectedSupplier, // Guardamos aquí Natura Web, Catalogo, etc
+            clientId: selectedSupplier, // Guardamos aquí Natura Web, Natura Catálogo, etc
             date: { seconds: now.getTime() / 1000 },
             saleStatus: 'pending_arrival', // Estado específico
             installments: installmentInfo.isInstallments ? installmentInfo.count : 1,
-            orderType: orderSource // 'web' o 'catalog'
+            orderType: orderSource, // 'web' o 'catalog'
+            cycle: selectedCycle || null // Guardar ciclo
         });
 
         clearCart();
@@ -1036,7 +1042,7 @@ export default function PosApp() {
   const getClientName = (id) => clients.find(c => c.id === id)?.name || 'Consumidor Final';
   
   const getSupplierName = (id) => {
-      if (WEB_SUPPLIERS.includes(id) || id === 'Catálogo Fisico') return id;
+      if (WEB_SUPPLIERS.includes(id) || id.includes('Catálogo')) return id;
       const s = suppliers.find(sup => sup.id === id);
       return s ? s.name : id || 'Proveedor'; 
   };
@@ -1198,8 +1204,8 @@ export default function PosApp() {
       {/* (Código de modales de reportes, confirmación, etc. está abajo en el JSX) */}
 
       {/* Header */}
-      <header className={`${view === 'purchases' ? 'bg-stone-800' : view === 'receipts' ? 'bg-stone-700' : 'bg-orange-500'} text-white p-4 shadow-md flex justify-between items-center z-10 shrink-0`}>
-        <h1 className="font-bold text-lg flex items-center gap-2">
+      <header className={`${view === 'purchases' ? 'bg-stone-800' : view === 'receipts' ? 'bg-stone-700' : 'bg-orange-500'} text-white p-2 shadow-md flex justify-between items-center z-10 shrink-0`}>
+        <h1 className="font-bold text-base flex items-center gap-2">
             {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'inventory' ? <Package className="w-5 h-5"/> : view === 'purchases' ? <ShoppingBag className="w-5 h-5"/> : view === 'receipts' ? <Receipt className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
             {getHeaderTitle()}
         </h1>
@@ -1211,23 +1217,23 @@ export default function PosApp() {
         {/* POS VIEW */}
         {(view === 'pos') && (
             <div className="flex flex-col h-full relative">
-                <div className="p-4 bg-stone-50 shadow-sm space-y-3">
-                    <div className="relative"><Search className="absolute left-3 top-3 w-5 h-5 text-stone-400"/><input className="w-full pl-10 p-2 rounded-lg border outline-none" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
-                    <div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div>
+                <div className="p-2 bg-white border-b shadow-sm space-y-2">
+                    <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div>
                 </div>
-                <div className="flex-1 overflow-y-auto px-4 pt-4 pb-48">
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                <div className="flex-1 overflow-y-auto p-2 bg-stone-50 pb-48">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                         {filteredProducts.map(p => (
-                            <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col h-full">
+                            <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col h-full group hover:shadow-md transition-all text-left">
                                 <div className="aspect-square w-full relative">
                                     {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}
                                     {p.stock <= 0 && <div className="absolute inset-0 bg-black/10 flex items-end justify-center p-1"><span className="text-[10px] font-bold bg-red-500 text-white px-2 rounded">Sin Stock</span></div>}
                                 </div>
-                                <div className="p-2 text-left">
-                                    <span className="font-bold text-sm line-clamp-2">{p.name}</span>
-                                    <div className="mt-1 flex justify-between items-end">
-                                        <span className="text-orange-600 font-bold">${formatMoney(p.price)}</span>
-                                        <span className={`text-[10px] px-2 rounded ${getStockStatus(p.stock).color}`}>{p.stock}</span>
+                                <div className="p-2 flex flex-col flex-1 justify-between">
+                                    <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
+                                    <div className="mt-2 flex justify-between items-end w-full">
+                                        <span className="text-orange-600 font-bold text-sm">${formatMoney(p.price)}</span>
+                                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${getStockStatus(p.stock).color}`}>{p.stock}</span>
                                     </div>
                                 </div>
                             </button>
@@ -1326,8 +1332,8 @@ export default function PosApp() {
                 ) : (
                     /* 2. VISTA PRINCIPAL DE PEDIDOS */
                     !orderSource ? (
-                        /* -- DASHBOARD PEDIDOS -- */
-                        <div className="p-4 space-y-6 pb-24">
+                        /* -- DASHBOARD PEDIDOS (SCROLLABLE FIX) -- */
+                        <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-24">
                             {/* Botón Nuevo Pedido */}
                             <div className="grid grid-cols-2 gap-4">
                                 <button onClick={() => setOrderSource('selection')} className="col-span-2 bg-stone-800 text-white p-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform">
@@ -1350,6 +1356,7 @@ export default function PosApp() {
                                                 <span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {formatDateSimple(order.date.seconds)}</span>
                                                 <span className="flex items-center gap-1"><Box className="w-3 h-3"/> {order.items.length} prod.</span>
                                                 {order.installments > 1 && <span className="flex items-center gap-1"><CreditCard className="w-3 h-3"/> {order.installments} cuotas</span>}
+                                                {order.cycle && <span className="flex items-center gap-1 font-bold text-purple-600"><Tag className="w-3 h-3"/> {order.cycle}</span>}
                                             </div>
                                             <div className="mt-3 pt-2 border-t flex justify-between items-center">
                                                 <span className="text-xs font-bold text-stone-400 uppercase">Toca para recibir</span>
@@ -1364,7 +1371,7 @@ export default function PosApp() {
                             <div>
                                 <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Compras</h3>
                                 <div className="space-y-2">
-                                    {purchaseHistoryData.slice(0, 5).map(h => (
+                                    {purchaseHistoryData.slice(0, 10).map(h => (
                                         <div key={h.id} className="bg-stone-50 p-3 rounded-xl flex justify-between items-center opacity-70">
                                             <div>
                                                 <div className="font-bold text-stone-700">${formatMoney(h.total)}</div>
@@ -1414,107 +1421,167 @@ export default function PosApp() {
                                         </div>
                                     ) : (
                                         <div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">
-                                            <div>
-                                                <label className="block font-bold text-sm mb-2">¿Es compra en cuotas?</label>
-                                                <div className="flex gap-2">
-                                                    <button onClick={() => setInstallmentInfo({...installmentInfo, isInstallments: false})} className={`flex-1 py-2 rounded-lg border font-bold ${!installmentInfo.isInstallments ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-stone-500'}`}>No</button>
-                                                    <button onClick={() => setInstallmentInfo({...installmentInfo, isInstallments: true})} className={`flex-1 py-2 rounded-lg border font-bold ${installmentInfo.isInstallments ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-stone-500'}`}>Sí</button>
-                                                </div>
-                                            </div>
-                                            {installmentInfo.isInstallments && (
+                                            {/* NUEVO: Selección de Marca para Catálogo */}
+                                            {!catalogBrand ? (
                                                 <div>
-                                                    <label className="block font-bold text-sm mb-2">Cantidad de Cuotas</label>
-                                                    <select className="w-full p-3 border rounded-xl bg-stone-50" value={installmentInfo.count} onChange={e => setInstallmentInfo({...installmentInfo, count: parseInt(e.target.value)})}>
-                                                        {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
-                                                    </select>
+                                                    <label className="block font-bold text-sm mb-3">¿De qué marca es el catálogo?</label>
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        {BRANDS.map(b => (
+                                                            <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>
+                                                        ))}
+                                                    </div>
                                                 </div>
+                                            ) : (
+                                                <>
+                                                    <div className="flex justify-between items-center border-b pb-2">
+                                                        <span className="font-bold text-lg text-stone-700">{catalogBrand}</span>
+                                                        <button onClick={() => setCatalogBrand('')} className="text-xs text-blue-500 underline">Cambiar</button>
+                                                    </div>
+
+                                                    {/* NUEVO: Selector de Ciclo/Campaña */}
+                                                    <div>
+                                                        <label className="block font-bold text-sm mb-2">Campaña / Ciclo</label>
+                                                        <div className="flex gap-2">
+                                                            <select 
+                                                                className="flex-1 p-3 border rounded-xl bg-stone-50" 
+                                                                value={selectedCycle} 
+                                                                onChange={(e) => setSelectedCycle(e.target.value)}
+                                                            >
+                                                                <option value="">Seleccionar...</option>
+                                                                {cycles.map(c => <option key={c} value={c}>{c}</option>)}
+                                                            </select>
+                                                            <button 
+                                                                onClick={() => setIsCycleModalOpen(true)} 
+                                                                className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center hover:bg-stone-700"
+                                                            >
+                                                                <Plus className="w-6 h-6"/>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    <div>
+                                                        <label className="block font-bold text-sm mb-2">¿Es compra en cuotas?</label>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => setInstallmentInfo({...installmentInfo, isInstallments: false})} className={`flex-1 py-2 rounded-lg border font-bold ${!installmentInfo.isInstallments ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-stone-500'}`}>No</button>
+                                                            <button onClick={() => setInstallmentInfo({...installmentInfo, isInstallments: true})} className={`flex-1 py-2 rounded-lg border font-bold ${installmentInfo.isInstallments ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-stone-500'}`}>Sí</button>
+                                                        </div>
+                                                    </div>
+                                                    {installmentInfo.isInstallments && (
+                                                        <div>
+                                                            <label className="block font-bold text-sm mb-2">Cantidad de Cuotas</label>
+                                                            <select className="w-full p-3 border rounded-xl bg-stone-50" value={installmentInfo.count} onChange={e => setInstallmentInfo({...installmentInfo, count: parseInt(e.target.value)})}>
+                                                                {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
+                                                            </select>
+                                                        </div>
+                                                    )}
+                                                    
+                                                    <button 
+                                                        onClick={() => {
+                                                            if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona la campaña/ciclo.", "info"); return; }
+                                                            setSelectedSupplier(`${catalogBrand} Catálogo`);
+                                                        }} 
+                                                        className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl"
+                                                    >
+                                                        Continuar
+                                                    </button>
+                                                </>
                                             )}
-                                            <button onClick={() => setSelectedSupplier('Catálogo Fisico')} className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl">Continuar</button>
                                         </div>
                                     )}
                                     <button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button>
                                 </div>
                             )}
 
-                            {/* Paso 3: Selección Productos (Carrito de Compra) */}
+                            {/* Paso 3: Selección Productos (Carrito de Compra) - LOOK & FEEL ACTUALIZADO (GRID) */}
                             {selectedSupplier && (
                                 <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
-                                    {/* Header de Compra */}
-                                    <div className="bg-stone-800 text-white p-3 flex justify-between items-center">
-                                        <div>
-                                            <div className="text-xs opacity-70 uppercase font-bold">{orderSource === 'web' ? 'Web' : 'Catálogo'}</div>
-                                            <div className="font-bold">{selectedSupplier}</div>
+                                    {/* Buscador y Filtros (Igual que Stock) */}
+                                    <div className="p-2 bg-white border-b relative space-y-2">
+                                        <div className="relative">
+                                            <Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/>
+                                            <input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar producto para agregar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
                                         </div>
-                                        <div className="text-right">
-                                            <div className="text-xl font-bold">${formatMoney(cartTotal)}</div>
-                                            {installmentInfo.isInstallments && <div className="text-[10px] bg-pink-600 px-2 rounded">{installmentInfo.count} cuotas</div>}
+                                        {/* Filtros de Categoría */}
+                                        <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                                            <button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>
+                                            {categories.map(c => (
+                                                <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>
+                                            ))}
                                         </div>
-                                    </div>
-
-                                    {/* Buscador y Productos */}
-                                    <div className="p-2 bg-white border-b relative">
-                                        <Search className="absolute left-4 top-4 w-4 h-4 text-stone-400"/>
-                                        <input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar producto para agregar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
                                     </div>
                                     
+                                    {/* GRID DE PRODUCTOS (Igual que Stock) */}
                                     <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48">
-                                        <div className="grid grid-cols-1 gap-2">
-                                            {filteredProducts.slice(0, 20).map(p => (
-                                                <button key={p.id} onClick={() => addToCart(p)} className="bg-white p-2 rounded-lg border flex gap-3 items-center text-left">
-                                                    <div className="w-10 h-10 bg-stone-100 rounded flex-shrink-0">
-                                                        {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover rounded" /> : <Leaf className="w-full h-full p-2 text-stone-300"/>}
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                                            {filteredProducts.map(p => (
+                                                <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full">
+                                                    {/* Image Area */}
+                                                    <div className="aspect-square w-full relative">
+                                                        {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200 bg-stone-50" />}
                                                     </div>
-                                                    <div className="flex-1 min-w-0">
-                                                        <div className="font-bold text-sm truncate">{p.name}</div>
-                                                        <div className="text-xs text-stone-500">{p.category}</div>
+                                                    {/* Details Area */}
+                                                    <div className="p-2 flex flex-col flex-1 justify-between text-left w-full">
+                                                        <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
+                                                        <div className="mt-2 flex justify-between items-end w-full">
+                                                            <span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span>
+                                                            <div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div>
+                                                        </div>
                                                     </div>
-                                                    <Plus className="w-5 h-5 text-stone-400"/>
                                                 </button>
                                             ))}
                                         </div>
                                     </div>
 
-                                    {/* Carrito de Compra (Purchase Cart) */}
-                                    <div className="fixed bottom-[76px] left-0 w-full z-20 bg-white rounded-t-3xl shadow-[0_-4px_20px_rgba(0,0,0,0.1)] border-t border-stone-100 flex flex-col max-h-[60vh]">
-                                        <div className="p-4 border-b">
-                                            <h3 className="font-bold text-stone-700 flex items-center gap-2"><ShoppingCart className="w-4 h-4"/> Resumen Pedido</h3>
+                                    {/* Carrito de Compra (Purchase Cart) COMPACTO & OPTIMIZADO */}
+                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-[0_-4px_20px_rgba(0,0,0,0.15)] border-t border-stone-200 flex flex-col max-h-[50vh] min-h-0"> 
+                                        {/* Header Compacto */}
+                                        <div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0">
+                                            <div className="flex items-center gap-2 overflow-hidden">
+                                                <ShoppingCart className="w-4 h-4 text-stone-700 shrink-0"/>
+                                                <span className="font-bold text-stone-800 text-sm whitespace-nowrap">Resumen</span>
+                                                <span className="text-xs text-stone-500 truncate border-l pl-2 border-stone-300 max-w-[150px]">{selectedSupplier}</span>
+                                            </div>
+                                            <button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500 hover:bg-red-100 hover:text-red-500 transition-colors">
+                                                <X className="w-4 h-4"/>
+                                            </button>
                                         </div>
-                                        <div className="flex-1 overflow-y-auto p-4">
-                                            {cart.length === 0 && <div className="text-center text-stone-400 py-4">Agrega productos arriba</div>}
+
+                                        {/* Lista Scrollable */}
+                                        <div className="flex-1 overflow-y-auto p-3 min-h-0"> {/* min-h-0 is key for nested flex scroll */}
+                                            {cart.length === 0 && <div className="text-center text-stone-400 py-4 text-xs">Agrega productos arriba</div>}
                                             {cart.map(item => (
-                                                <div key={item.id} className="mb-4 border-b pb-2 last:border-0">
-                                                    <div className="flex justify-between items-start mb-2">
-                                                        <span className="text-sm font-medium line-clamp-1">{item.name}</span>
-                                                        <button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-4 h-4"/></button>
+                                                <div key={item.id} className="mb-3 border-b pb-2 last:border-0">
+                                                    <div className="flex justify-between items-start mb-1">
+                                                        <span className="text-xs font-bold line-clamp-1">{item.name}</span>
+                                                        <button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button>
                                                     </div>
-                                                    <div className="flex gap-3 items-end">
-                                                        <div className="flex items-center bg-stone-100 rounded-lg h-8">
+                                                    <div className="flex gap-2 items-end">
+                                                        <div className="flex items-center bg-stone-100 rounded-lg h-7">
                                                             <button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button>
-                                                            <span className="text-xs font-bold w-6 text-center">{item.qty}</span>
+                                                            <span className="text-xs font-bold w-5 text-center">{item.qty}</span>
                                                             <button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button>
                                                         </div>
                                                         <div className="flex-1">
-                                                            <label className="text-[9px] font-bold text-stone-400 uppercase block">Costo Unit.</label>
-                                                            <input type="number" className="w-full border-b border-stone-300 text-sm font-bold text-right focus:border-stone-800 outline-none" 
+                                                            <input type="number" className="w-full border-b border-stone-300 text-xs font-bold text-right focus:border-stone-800 outline-none bg-transparent" 
                                                                 value={item.transactionPrice === 0 ? '' : item.transactionPrice} 
-                                                                placeholder="0"
+                                                                placeholder="Costo..."
                                                                 onChange={e => updateTransactionPrice(item.id, parseInt(e.target.value) || 0)}
                                                             />
                                                         </div>
-                                                        <div className="w-20 text-right">
-                                                            <div className="text-[9px] font-bold text-stone-400 uppercase">Subtotal</div>
-                                                            <div className="font-bold">${formatMoney(item.transactionPrice * item.qty)}</div>
+                                                        <div className="w-16 text-right">
+                                                            <div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div>
                                                         </div>
                                                     </div>
                                                 </div>
                                             ))}
                                         </div>
-                                        <div className="p-4 border-t bg-stone-50">
-                                            <button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-6">
+
+                                        {/* Footer Compacto */}
+                                        <div className="p-3 border-t bg-white shrink-0">
+                                            <button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm">
                                                 <span>Guardar Pedido</span>
                                                 <span>${formatMoney(cartTotal)}</span>
                                             </button>
-                                            <button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="w-full mt-2 py-2 text-stone-400 text-xs font-bold">Cancelar</button>
                                         </div>
                                     </div>
                                 </div>
