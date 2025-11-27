@@ -150,7 +150,7 @@ const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
 
 export default function PosApp() {
 
-  // --- FUNCIONES AUXILIARES (DEFINIDAS AL INICIO PARA EVITAR ERRORES) ---
+  // --- FUNCIONES AUXILIARES ---
   const formatMoney = (amount) => {
     return (amount || 0).toLocaleString('es-CL', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   };
@@ -178,7 +178,7 @@ export default function PosApp() {
       if (!transaction) return 'unknown';
       if (transaction.saleStatus === 'pending_order') return 'waiting';
       if (transaction.saleStatus === 'pending_delivery') return 'ready';
-      return 'ready'; // Default fallback
+      return 'ready'; 
   };
     
   // Estados Principales
@@ -384,8 +384,6 @@ export default function PosApp() {
       return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const triggerAlert = (title, message, type = 'error') => setAlertState({ show: true, title, message, type });
-
   // --- CALCULO DE FECHAS DE PAGO (Manual para Cuotas) ---
   const calculatePaymentSchedule = (total, planType, data) => {
       let schedule = [];
@@ -449,9 +447,6 @@ export default function PosApp() {
         let finalItems = [...cart];
         let saleStatus = 'pending_order'; // Por defecto: Por Encargar
 
-        // Si hay stock suficiente de TODO, descontamos y marcamos "Por Entregar"
-        // Si FALTA stock, marcamos "Por Encargar" y NO descontamos aun (hasta que se reciba la compra)
-        
         if (stockAnalysis.canDeliverAll) {
              saleStatus = 'pending_delivery'; // Listo para entrega
              for (let item of finalItems) {
@@ -463,7 +458,6 @@ export default function PosApp() {
                  batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
              }
         } else {
-            // Falta stock: Se va a Por Encargar. No descontamos inventario todavía.
             saleStatus = 'pending_order';
         }
 
@@ -478,17 +472,14 @@ export default function PosApp() {
             total: total,
             clientId: selectedClient,
             date: { seconds: now.getTime() / 1000 },
-            
             paymentPlanType, 
             paymentSchedule, 
-            balance: total, // Siempre debe el total al inicio (regla de negocio)
+            balance: total, // Siempre debe el total al inicio
             paymentStatus: 'pending', // Siempre pendiente
             paymentMethod: null, // No hubo pago en caja
-            
             totalCost: transactionFIFO,
             margin: margin,
             marginPercent: (total > 0) ? (margin/total)*100 : 0,
-            
             saleStatus: saleStatus, 
             origin: 'POS',
             courier: null,
@@ -501,7 +492,7 @@ export default function PosApp() {
         
         clearCart();
         setIsCheckoutModalOpen(false);
-        setCheckoutData({ installmentsCount: 3, installmentDates: {}, downPayment: '' }); // Reset
+        setCheckoutData({ installmentsCount: 3, installmentDates: {}, downPayment: '' }); 
 
         triggerAlert("Éxito", `Pedido ${displayId} registrado en Deudores.`, "success");
 
@@ -725,9 +716,6 @@ export default function PosApp() {
       try {
           const batch = writeBatch(db);
           
-          // Si estaba "Por Encargar" (pending_order), NO se descontó stock antes. Descontar ahora.
-          // Si estaba "Por Entregar" (pending_delivery), YA se descontó stock.
-          
           let finalTotalCost = deliveryTransaction.totalCost;
           const updatedItems = [];
           
@@ -745,7 +733,6 @@ export default function PosApp() {
                    batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
               }
           } else {
-              // Ya estaba descontado, mantenemos items
               updatedItems.push(...(deliveryTransaction.items || []));
           }
           
@@ -1005,7 +992,6 @@ export default function PosApp() {
           const newStatus = updatedBalance <= 0 ? 'paid' : 'partial';
           
           const extraUpdates = {};
-          // Solo finalizamos la fecha si ya está completada la entrega
           if (updatedBalance <= 0 && (selectedPaymentTx.saleStatus === 'completed' || selectedPaymentTx.saleStatus === 'pending_delivery') && !selectedPaymentTx.finalizedAt) {
                extraUpdates.finalizedAt = { seconds: Date.now() / 1000 };
           }
@@ -1432,6 +1418,40 @@ export default function PosApp() {
             </div>
         )}
         
+        {/* INVENTORY */}
+        {view === 'inventory' && (
+            <div className="p-4 overflow-y-auto pb-24">
+                <div className="flex justify-between mb-4 gap-2">
+                    <div className="flex-1 relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 rounded-xl border" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
+                    <button onClick={() => setIsCategoryModalOpen(true)} className="p-2 border rounded-xl"><Tag/></button>
+                    <button onClick={() => setShowCatalogModal(true)} className="p-2 bg-green-600 text-white rounded-xl"><Share2/></button>
+                    <button onClick={() => { setEditingProduct(null); setProductPriceInput(''); setIsProductModalOpen(true); }} className="px-4 bg-orange-500 text-white rounded-xl font-bold flex items-center gap-2"><Plus className="w-4 h-4"/> Nuevo</button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                    {filteredProducts.map(p => (
+                        <div key={p.id} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all">
+                            <div className="aspect-square w-full relative">
+                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200 bg-stone-50" />}
+                            </div>
+                            <div className="p-2 flex flex-col flex-1 justify-between text-left">
+                                <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
+                                <div className="mt-2 flex justify-between items-end">
+                                    <span className="text-orange-600 font-bold">${formatMoney(p.price)}</span>
+                                    <span className={`text-[10px] px-2 py-0.5 rounded-lg font-bold ${getStockStatus(p.stock).color}`}>{p.stock}</span>
+                                </div>
+                                <div className="flex gap-2 mt-3 pt-2 border-t">
+                                    <button onClick={() => { setViewingHistoryProduct(p); setIsHistoryModalOpen(true); loadProductHistory(p.id); }} className="flex-1 py-1 bg-purple-50 text-purple-600 rounded flex justify-center"><ScrollText className="w-4 h-4"/></button>
+                                    <button onClick={() => { setEditingProduct(p); setProductPriceInput('$'+formatMoney(p.price)); setIsProductModalOpen(true); }} className="flex-1 py-1 bg-blue-50 text-blue-600 rounded flex justify-center"><Pencil className="w-4 h-4"/></button>
+                                    <button onClick={() => handleDeleteProduct(p.id)} className="flex-1 py-1 bg-red-50 text-red-600 rounded flex justify-center"><Trash2 className="w-4 h-4"/></button>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+        
+        {/* VENTA (Receipts) */}
         {view === 'receipts' && (
             <div className="p-4 overflow-y-auto pb-24">
                 <div className="mb-6">
