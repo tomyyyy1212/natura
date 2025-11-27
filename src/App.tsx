@@ -129,12 +129,16 @@ const generateShortId = () => {
 
 // --- COMPONENTE INPUT DINERO EN VIVO ---
 const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
-    const displayValue = value ? '$' + parseInt(value).toLocaleString('es-CL') : '';
+    // Verifica si value es válido para mostrar, permitiendo 0
+    const isValid = value !== '' && value !== null && value !== undefined;
+    const displayValue = isValid ? '$' + parseInt(value).toLocaleString('es-CL') : '';
+    
     const handleChange = (e) => {
         const rawValue = e.target.value.replace(/\D/g, '');
         const numberValue = rawValue === '' ? '' : parseInt(rawValue, 10);
         onChange(numberValue);
     };
+    
     return (
         <input
             type="text"
@@ -354,6 +358,7 @@ export default function PosApp() {
   useEffect(() => {
     if (!user) return;
     const basePath = `artifacts/${APP_ID}/public/data`;
+    
     const unsubProducts = onSnapshot(collection(db, basePath, 'products'), (s) => setProducts(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubClients = onSnapshot(collection(db, basePath, 'clients'), (s) => {
         const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1493,7 +1498,7 @@ export default function PosApp() {
                                 </div>
                                 <div className="flex gap-2 mt-3 pt-2 border-t">
                                     <button onClick={() => { setViewingHistoryProduct(p); setIsHistoryModalOpen(true); loadProductHistory(p.id); }} className="flex-1 py-1 bg-purple-50 text-purple-600 rounded flex justify-center"><ScrollText className="w-4 h-4"/></button>
-                                    <button onClick={() => { setEditingProduct(p); setProductPriceInput('$'+formatMoney(p.price)); setIsProductModalOpen(true); }} className="flex-1 py-1 bg-blue-50 text-blue-600 rounded flex justify-center"><Pencil className="w-4 h-4"/></button>
+                                    <button onClick={() => { setEditingProduct(p); setProductPriceInput(p.price); setIsProductModalOpen(true); }} className="flex-1 py-1 bg-blue-50 text-blue-600 rounded flex justify-center"><Pencil className="w-4 h-4"/></button>
                                     <button onClick={() => handleDeleteProduct(p.id)} className="flex-1 py-1 bg-red-50 text-red-600 rounded flex justify-center"><Trash2 className="w-4 h-4"/></button>
                                 </div>
                             </div>
@@ -2269,7 +2274,7 @@ export default function PosApp() {
                   <span className="absolute left-3 top-3 text-stone-400">$</span>
                   <MoneyInput 
                       className="w-full pl-7 p-3 border rounded-xl" 
-                      value={productPriceInput.replace(/\D/g,'')} 
+                      value={productPriceInput} 
                       onChange={val => setProductPriceInput(val)}
                       placeholder="Precio" 
                   />
