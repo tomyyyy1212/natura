@@ -131,7 +131,7 @@ const generateShortId = () => {
 const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
     // Verifica si value es válido para mostrar, permitiendo 0
     const isValid = value !== '' && value !== null && value !== undefined;
-    const displayValue = isValid ? '$' + parseInt(value).toLocaleString('es-CL') : '';
+    const displayValue = isValid ? parseInt(value).toLocaleString('es-CL') : '';
     
     const handleChange = (e) => {
         const rawValue = e.target.value.replace(/\D/g, '');
@@ -224,6 +224,11 @@ export default function PosApp() {
   // Alertas y Confirmaciones
   const [alertState, setAlertState] = useState({ show: false, title: '', message: '', type: 'info' }); 
   const [confirmationState, setConfirmationState] = useState({ show: false, title: '', message: '', type: 'neutral', onConfirm: null });
+  
+  // --- FUNCIÓN TRIGGER ALERT (MOVIDA ARRIBA PARA EVITAR ERRORES DE REFERENCIA) ---
+  const triggerAlert = (title, message, type = 'error') => {
+      setAlertState({ show: true, title, message, type });
+  };
 
   // NUEVO: Estado para confirmar fecha de entrega diferida
   const [confirmDeliveryModal, setConfirmDeliveryModal] = useState({ show: false, transaction: null });
@@ -358,7 +363,6 @@ export default function PosApp() {
   useEffect(() => {
     if (!user) return;
     const basePath = `artifacts/${APP_ID}/public/data`;
-    
     const unsubProducts = onSnapshot(collection(db, basePath, 'products'), (s) => setProducts(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubClients = onSnapshot(collection(db, basePath, 'clients'), (s) => {
         const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1042,9 +1046,11 @@ export default function PosApp() {
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const price = parseInt(fd.get('price').replace(/\D/g, ''), 10) || 0;
     const imageFile = fd.get('image');
     
+    // FIX: Usar state en vez de fd.get('price') para evitar error de replace en null
+    const price = Number(productPriceInput) || 0;
+
     if (!editingProduct && (!imageFile || imageFile.size === 0)) {
         triggerAlert("Falta Imagen", "Es obligatorio subir una foto del producto.", "error");
         return;
