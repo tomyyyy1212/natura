@@ -69,7 +69,8 @@ import {
   QrCode,
   CreditCard as DebitCard,
   ToggleLeft,
-  ToggleRight
+  ToggleRight,
+  ClipboardList
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -128,16 +129,12 @@ const generateShortId = () => {
 
 // --- COMPONENTE INPUT DINERO EN VIVO ---
 const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
-    // Formatear para mostrar
     const displayValue = value ? '$' + parseInt(value).toLocaleString('es-CL') : '';
-
     const handleChange = (e) => {
-        // Eliminar todo lo que no sea número
         const rawValue = e.target.value.replace(/\D/g, '');
         const numberValue = rawValue === '' ? '' : parseInt(rawValue, 10);
         onChange(numberValue);
     };
-
     return (
         <input
             type="text"
@@ -153,11 +150,9 @@ const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
 
 export default function PosApp() {
 
+  // --- FUNCIONES AUXILIARES (DEFINIDAS AL INICIO PARA EVITAR ERRORES) ---
   const formatMoney = (amount) => {
-    return (amount || 0).toLocaleString('es-CL', {
-      minimumFractionDigits: 0, 
-      maximumFractionDigits: 0  
-    });
+    return (amount || 0).toLocaleString('es-CL', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   };
 
   const formatDateWithTime = (seconds) => {
@@ -170,6 +165,20 @@ export default function PosApp() {
       if (!seconds) return '-';
       const d = new Date(seconds * 1000);
       return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  };
+
+  const getStockStatus = (stock) => {
+      if (stock === 0) return { color: 'bg-red-600 text-white', label: 'AGOTADO' };
+      if (stock === 1) return { color: 'bg-red-100 text-red-700 border border-red-200', label: 'CRÍTICO' };
+      if (stock > 1 && stock < 4) return { color: 'bg-orange-100 text-orange-800 border border-orange-200', label: 'BAJO' };
+      return { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'BIEN' };
+  };
+
+  const getOrderStatus = (transaction) => {
+      if (!transaction) return 'unknown';
+      if (transaction.saleStatus === 'pending_order') return 'waiting';
+      if (transaction.saleStatus === 'pending_delivery') return 'ready';
+      return 'ready'; // Default fallback
   };
     
   // Estados Principales
@@ -192,21 +201,16 @@ export default function PosApp() {
   
   // Checkout Logic State
   const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
-  const [deliveryType, setDeliveryType] = useState('immediate'); // 'immediate' | 'order'
-  const [paymentPlanType, setPaymentPlanType] = useState('full'); // 'full' | 'deposit' | 'installments'
+  const [paymentPlanType, setPaymentPlanType] = useState('full'); 
   
   // ESTADO CHECKOUT
   const [checkoutData, setCheckoutData] = useState({
-      downPayment: '', // Pie o abono
       installmentsCount: 3,
-      paymentMethod: 'Efectivo', // Default
-      firstPaymentDate: new Date().toISOString().split('T')[0],
-      initialReceiptFile: null // Nuevo campo para el archivo
+      installmentDates: {}, 
   });
 
   const [paymentMethod, setPaymentMethod] = useState('Efectivo'); 
   const [editingTransactionId, setEditingTransactionId] = useState(null); 
-  const [originalBatchesMap, setOriginalBatchesMap] = useState({}); 
     
   const [loading, setLoading] = useState(true); 
   const [searchTerm, setSearchTerm] = useState('');
@@ -223,82 +227,42 @@ export default function PosApp() {
   // Modales
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
-  
-  // CLIENTES MODAL Y ESTADO DE EDICIÓN
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
-
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
   const [showPreTicket, setShowPreTicket] = useState(false); 
   const [showStockAlertModal, setShowStockAlertModal] = useState(false); 
   const [showCatalogModal, setShowCatalogModal] = useState(false); 
   const [isCycleModalOpen, setIsCycleModalOpen] = useState(false);
-  
-  // NUEVOS MODALES REPORTES
   const [showExpiringModal, setShowExpiringModal] = useState(false);
   const [showPendingOrdersModal, setShowPendingOrdersModal] = useState(false);
-
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [viewingHistoryProduct, setViewingHistoryProduct] = useState(null);
-  
   const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
   const [deliveryTransaction, setDeliveryTransaction] = useState(null);
   const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState('Efectivo');
   const [selectedCourier, setSelectedCourier] = useState('Yo (Directo)');
-    
   const [editingProduct, setEditingProduct] = useState(null);
   const [productPriceInput, setProductPriceInput] = useState(''); 
   const [receiptDetails, setReceiptDetails] = useState(null);
-  
-  // Kardex
   const [productHistory, setProductHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-    
-  const [showPurchaseHistory, setShowPurchaseHistory] = useState(false);
-
-  // Estados Pedido
-  const [orderSource, setOrderSource] = useState(null); // 'web' | 'catalog'
+  const [orderSource, setOrderSource] = useState(null);
   const [catalogBrand, setCatalogBrand] = useState(''); 
   const [installmentInfo, setInstallmentInfo] = useState({ isInstallments: false, count: 1 });
-  // Recepción
   const [checkInOrder, setCheckInOrder] = useState(null); 
   const [checkInItems, setCheckInItems] = useState([]);
-
-  const [purchaseMode, setPurchaseMode] = useState(null);
   const [selectedCycle, setSelectedCycle] = useState('');
-  const [magazineFile, setMagazineFile] = useState(null);
-
-  // Toggle Venta Inmediata en Carrito
-  const [isImmediateSale, setIsImmediateSale] = useState(false);
-
-  // Filtros
-  const [filterStartDate, setFilterStartDate] = useState('');
-  const [filterEndDate, setFilterEndDate] = useState('');
-  const [filterClient, setFilterClient] = useState('');
-  const [filterProduct, setFilterProduct] = useState('');
-  const [showFilters, setShowFilters] = useState(false);
-
-  const [phStartDate, setPhStartDate] = useState('');
-  const [phEndDate, setPhEndDate] = useState('');
-  const [phSupplier, setPhSupplier] = useState('');
-  const [phProduct, setPhProduct] = useState('');
-  const [showPhFilters, setShowPhFilters] = useState(false);
-
-  // UI Extras
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('ALL');
   const [stockFilter, setStockFilter] = useState('ALL'); 
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [showClientOptions, setShowClientOptions] = useState(false);
   const clientInputRef = useRef(null);
-
-  // Finanzas State
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [selectedPaymentTx, setSelectedPaymentTx] = useState(null);
-  const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(null); // Index of installment
+  const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(null); 
   const [paymentAmountInput, setPaymentAmountInput] = useState('');
-  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); // Nuevo estado para archivo
-
-  // Report Phones
+  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); 
   const [reportPhones, setReportPhones] = useState(() => {
       try {
         const saved = localStorage.getItem('stock_report_phones');
@@ -312,7 +276,6 @@ export default function PosApp() {
       localStorage.setItem('stock_report_phones', JSON.stringify(reportPhones));
   }, [reportPhones]);
 
-  // Filtros Reportes
   const [reportStartDate, setReportStartDate] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('en-CA'); 
@@ -321,7 +284,6 @@ export default function PosApp() {
     return new Date().toLocaleDateString('en-CA'); 
   });
 
-  // Auth & Sync
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -353,31 +315,24 @@ export default function PosApp() {
     return () => unsubscribeAuth();
   }, []);
 
-  // Listeners
   useEffect(() => {
     if (!user) return;
     const basePath = `artifacts/${APP_ID}/public/data`;
-    
     const unsubProducts = onSnapshot(collection(db, basePath, 'products'), (s) => setProducts(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    
     const unsubClients = onSnapshot(collection(db, basePath, 'clients'), (s) => {
         const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
         data.sort((a, b) => a.name.localeCompare(b.name));
         setClients(data);
     });
-
     const unsubCategories = onSnapshot(collection(db, basePath, 'categories'), (s) => setCategories(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubSuppliers = onSnapshot(collection(db, basePath, 'suppliers'), (s) => setSuppliers(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const qTrans = query(collection(db, basePath, 'transactions'), orderBy('date', 'desc'), limit(200));
     const unsubTrans = onSnapshot(qTrans, (s) => setTransactions(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubCycles = onSnapshot(collection(db, basePath, 'cycles'), (s) => setCycles(s.docs.map(d => d.data().name)));
-    
-    // Listener de Lotes
     const unsubBatches = onSnapshot(collection(db, basePath, 'inventory_batches'), (s) => {
         const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
         setInventoryBatches(data);
     });
-
     return () => {
       unsubProducts(); unsubClients(); unsubCategories(); unsubSuppliers(); unsubTrans(); unsubCycles(); unsubBatches();
     };
@@ -395,24 +350,14 @@ export default function PosApp() {
 
   const triggerAlert = (title, message, type = 'error') => setAlertState({ show: true, title, message, type });
 
-  const getStockStatus = (stock) => {
-      if (stock === 0) return { color: 'bg-red-600 text-white', label: 'AGOTADO' };
-      if (stock === 1) return { color: 'bg-red-100 text-red-700 border border-red-200', label: 'CRÍTICO' };
-      if (stock > 1 && stock < 4) return { color: 'bg-orange-100 text-orange-800 border border-orange-200', label: 'BAJO' };
-      return { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'BIEN' };
-  };
-
-  // --- LOGICA DE AUTODETECCIÓN DE ENTREGA ---
-  // Analizamos el carrito para ver qué productos tienen stock y cuáles no
+  // --- LOGICA DE AUTODETECCIÓN DE STOCK ---
   const stockAnalysis = useMemo(() => {
     const available = [];
     const missing = [];
     let canDeliverAll = true;
-
     cart.forEach(item => {
         const prod = products.find(p => p.id === item.id);
         const currentStock = prod ? prod.stock : 0;
-        
         if (currentStock >= item.qty) {
             available.push(item);
         } else {
@@ -420,25 +365,19 @@ export default function PosApp() {
             canDeliverAll = false;
         }
     });
-
     return { available, missing, canDeliverAll };
   }, [cart, products]);
 
-  // Cuando se abre el modal, si falta stock, cambiamos automático a "order"
+  // Resetear fechas al abrir modal
   useEffect(() => {
     if (isCheckoutModalOpen) {
-        if (stockAnalysis.canDeliverAll) {
-            setDeliveryType('immediate');
-        } else {
-            setDeliveryType('order');
-        }
+        setCheckoutData(prev => ({...prev, installmentDates: {}}));
     }
-  }, [isCheckoutModalOpen, stockAnalysis.canDeliverAll]);
+  }, [isCheckoutModalOpen]);
 
-  // --- CALCULO DE FECHAS DE PAGO ---
+  // --- CALCULO DE FECHAS DE PAGO (Manual para Cuotas) ---
   const calculatePaymentSchedule = (total, planType, data) => {
       let schedule = [];
-      const today = new Date();
       
       if (planType === 'full') {
           schedule.push({
@@ -448,45 +387,17 @@ export default function PosApp() {
               status: 'pending',
               type: 'total'
           });
-      } else if (planType === 'deposit') {
-          // Abono
-          const deposit = Number(data.downPayment);
-          const remaining = total - deposit;
-          
-          // Primer pago (Abono) - ESTADO PAGADO
-          schedule.push({
-              number: 1,
-              date: today.getTime() / 1000,
-              amount: deposit,
-              status: 'paid',
-              type: 'abono',
-              method: data.paymentMethod 
-          });
-          
-          // Segundo pago (Saldo)
-          if (remaining > 0) {
-              schedule.push({
-                  number: 2,
-                  date: null, 
-                  amount: remaining,
-                  status: 'pending',
-                  type: 'saldo'
-              });
-          }
       } else if (planType === 'installments') {
           const count = Number(data.installmentsCount);
           const amountPerQuota = Math.round(total / count);
           
-          let startDate = new Date(data.firstPaymentDate);
-          startDate.setHours(12, 0, 0, 0);
-
           for (let i = 0; i < count; i++) {
-              const paymentDate = new Date(startDate);
-              paymentDate.setMonth(startDate.getMonth() + i);
-              
+              const manualDate = data.installmentDates[i];
+              const dateSecs = manualDate ? new Date(manualDate + 'T12:00:00').getTime() / 1000 : null;
+
               schedule.push({
                   number: i + 1,
-                  date: paymentDate.getTime() / 1000,
+                  date: dateSecs,
                   amount: amountPerQuota,
                   status: 'pending',
                   type: 'cuota'
@@ -496,60 +407,42 @@ export default function PosApp() {
       return schedule;
   };
 
-  // --- SAVE CHECKOUT TRANSACTION (VERSIÓN FINAL FLEXIBLE Y CON COMPROBANTE) ---
+  // --- GUARDAR VENTA (SIN PAGO INICIAL) ---
   const handleConfirmCheckout = async () => {
     if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
     
     const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
-    let initialPaid = 0;
-
-    // Lógica de Dinero Inicial y Validaciones
-    if (paymentPlanType === 'full') {
-        if (deliveryType === 'immediate') {
-            initialPaid = total; 
-        } else {
-            initialPaid = 0; 
+    
+    // Validar Fechas de Cuotas
+    if (paymentPlanType === 'installments') {
+        const count = Number(checkoutData.installmentsCount);
+        for(let i=0; i<count; i++) {
+            if (!checkoutData.installmentDates[i]) {
+                triggerAlert("Faltan Fechas", `Ingresa la fecha para la cuota ${i+1}.`, "error");
+                return;
+            }
         }
-    } else if (paymentPlanType === 'deposit') {
-        initialPaid = Number(checkoutData.downPayment);
-    }
-
-    // Validación de Medio de Pago e Imagen si hay pago inicial
-    if (initialPaid > 0 && paymentPlanType !== 'installments') {
-         if (!checkoutData.paymentMethod) {
-             triggerAlert("Falta Pago", "Selecciona el medio de pago.", "error");
-             return;
-         }
     }
 
     setLoading(true);
-    setProcessingMsg("Registrando Venta...");
-
-    let initialReceiptUrl = null;
+    setProcessingMsg("Registrando Pedido...");
 
     try {
-        // 1. Subir Comprobante si existe
-        if (checkoutData.initialReceiptFile) {
-            try {
-                const storageRef = ref(storage, `receipts/${Date.now()}_${checkoutData.initialReceiptFile.name}`);
-                const snap = await uploadBytes(storageRef, checkoutData.initialReceiptFile);
-                initialReceiptUrl = await getDownloadURL(snap.ref);
-            } catch (err) {
-                console.error("Error subiendo comprobante inicial", err);
-                // Continuamos aunque falle la imagen, pero idealmente avisaríamos.
-            }
-        }
-
         const batch = writeBatch(db);
         const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
         const displayId = generateShortId();
         const now = new Date();
 
-        // FIFO Logic
+        // FIFO Logic (Solo si hay stock disponible se descuenta ahora)
         let transactionFIFO = 0;
         let finalItems = [...cart];
+        let saleStatus = 'pending_order'; // Por defecto: Por Encargar
 
-        if (deliveryType === 'immediate') {
+        // Si hay stock suficiente de TODO, descontamos y marcamos "Por Entregar"
+        // Si FALTA stock, marcamos "Por Encargar" y NO descontamos aun (hasta que se reciba la compra)
+        
+        if (stockAnalysis.canDeliverAll) {
+             saleStatus = 'pending_delivery'; // Listo para entrega
              for (let item of finalItems) {
                  const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
                  item.fifoTotalCost = totalCost; 
@@ -558,40 +451,14 @@ export default function PosApp() {
                  batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
                  batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
              }
+        } else {
+            // Falta stock: Se va a Por Encargar. No descontamos inventario todavía.
+            saleStatus = 'pending_order';
         }
 
         const margin = total - transactionFIFO;
-        const balance = total - initialPaid;
+        const paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
         
-        // Generar cronograma BASE
-        let paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
-        
-        // --- MODIFICAR CRONOGRAMA PARA INCLUIR HISTORIAL DEL PAGO INICIAL ---
-        if (initialPaid > 0) {
-            // Crear el registro de pago detallado
-            const initialPaymentRecord = {
-                amount: initialPaid,
-                date: now.getTime() / 1000,
-                method: checkoutData.paymentMethod,
-                receiptUrl: initialReceiptUrl,
-                id: 'init_' + now.getTime()
-            };
-
-            if (paymentSchedule.length > 0) {
-                paymentSchedule[0] = {
-                    ...paymentSchedule[0],
-                    status: 'paid', // Aseguramos que esté pagado
-                    paidAmount: initialPaid,
-                    paidAt: now.getTime() / 1000,
-                    method: checkoutData.paymentMethod,
-                    receiptUrl: initialReceiptUrl, // URL principal del item
-                    paymentHistory: [initialPaymentRecord] // Historial detallado
-                };
-            }
-        }
-
-        const paymentStatus = balance <= 0 ? 'paid' : (initialPaid > 0 ? 'partial' : 'pending');
-
         const transactionData = {
             id: newTransId, 
             displayId: displayId,
@@ -602,21 +469,20 @@ export default function PosApp() {
             date: { seconds: now.getTime() / 1000 },
             
             paymentPlanType, 
-            paymentSchedule, // Cronograma con historial inyectado
-            balance,          
-            paymentStatus,    
-            
-            paymentMethod: (initialPaid > 0) ? checkoutData.paymentMethod : null, 
+            paymentSchedule, 
+            balance: total, // Siempre debe el total al inicio (regla de negocio)
+            paymentStatus: 'pending', // Siempre pendiente
+            paymentMethod: null, // No hubo pago en caja
             
             totalCost: transactionFIFO,
             margin: margin,
             marginPercent: (total > 0) ? (margin/total)*100 : 0,
             
-            saleStatus: deliveryType === 'immediate' ? 'completed' : 'pending',
+            saleStatus: saleStatus, 
             origin: 'POS',
-            courier: deliveryType === 'immediate' ? 'Yo (Directo)' : null,
-            deliveredAt: deliveryType === 'immediate' ? { seconds: now.getTime() / 1000 } : null,
-            finalizedAt: (deliveryType === 'immediate' && paymentStatus === 'paid') ? { seconds: now.getTime() / 1000 } : null
+            courier: null,
+            deliveredAt: null,
+            finalizedAt: null 
         };
 
         batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), transactionData);
@@ -624,11 +490,9 @@ export default function PosApp() {
         
         clearCart();
         setIsCheckoutModalOpen(false);
-        
-        // Limpiar campos específicos del checkout
-        setCheckoutData(prev => ({ ...prev, downPayment: '', initialReceiptFile: null }));
+        setCheckoutData({ installmentsCount: 3, installmentDates: {}, downPayment: '' }); // Reset
 
-        triggerAlert("Éxito", `Venta ${displayId} registrada.`, "success");
+        triggerAlert("Éxito", `Pedido ${displayId} registrado en Deudores.`, "success");
 
     } catch (error) {
         console.error(error);
@@ -639,7 +503,6 @@ export default function PosApp() {
     }
   };
 
-  // FIFO Logic
   const calculateFIFOCost = async (productId, qtyToSell) => {
     const batchesRef = collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`);
     const q = query(batchesRef, where('productId', '==', productId));
@@ -683,7 +546,6 @@ export default function PosApp() {
     return { totalCost, batchUpdates, fifoDetails };
   };
 
-  // Actions
   const handleSendStockReport = (phoneNumber) => {
       if (!phoneNumber) { triggerAlert("Falta número", "Ingresa un número de teléfono.", "info"); return; }
       const lowStockItems = products.filter(p => p.stock < 4);
@@ -704,7 +566,6 @@ export default function PosApp() {
       setShowCatalogModal(false);
   };
 
-  // --- LOGICA PARA AVISAR AL CLIENTE ---
   const handleNotifyClient = (transaction) => {
       const client = clients.find(c => c.id === transaction.clientId);
       if (!client || !client.phone) {
@@ -719,7 +580,6 @@ export default function PosApp() {
       window.open(`https://wa.me/${client.phone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
-  // --- KARDEX: Cargar Historial ---
   const loadProductHistory = async (prodId) => {
     setLoadingHistory(true);
     setProductHistory([]);
@@ -799,9 +659,9 @@ export default function PosApp() {
           confirmTitle = "Devolución de Stock";
           confirmMsg = "IMPORTANTE: ¿El cliente NO retiró el pedido?\n\nAl eliminar este envío, el stock volverá a tu inventario automáticamente.";
           type = "danger";
-      } else if (transaction.saleStatus === 'pending') {
+      } else if (transaction.saleStatus === 'pending_order') {
           confirmTitle = "Cancelar Encargo";
-          confirmMsg = "¿Cancelar encargo del cliente?\n\nSi ya compraste los productos, se quedarán en tu stock disponible.";
+          confirmMsg = "¿Cancelar encargo del cliente?";
           type = "danger";
       }
 
@@ -817,7 +677,7 @@ export default function PosApp() {
               try {
                   const batch = writeBatch(db);
                   batch.delete(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id));
-                  if (transaction.saleStatus === 'completed' || transaction.saleStatus === 'in_transit') { 
+                  if (transaction.saleStatus === 'completed' || transaction.saleStatus === 'in_transit' || transaction.saleStatus === 'pending_delivery') { 
                       (transaction.items || []).forEach(item => {
                           const productRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
                           const adjustment = transaction.type === 'sale' ? item.qty : -item.qty;
@@ -826,7 +686,7 @@ export default function PosApp() {
                   }
                   await batch.commit();
                   setReceiptDetails(null);
-                  triggerAlert("Operación Exitosa", transaction.saleStatus === 'in_transit' ? "Stock devuelto al inventario." : "Registro eliminado.", "success");
+                  triggerAlert("Operación Exitosa", "Registro eliminado.", "success");
               } catch (error) {
                   console.error("Error voiding transaction:", error);
                   triggerAlert("Error", "No se pudo anular.", "error");
@@ -839,17 +699,6 @@ export default function PosApp() {
   };
 
   const handleDeliverOrder = (transaction) => {
-      const missingStock = [];
-      (transaction.items || []).forEach(item => {
-          const currentProduct = products.find(p => p.id === item.id);
-          if (!currentProduct || currentProduct.stock < item.qty) {
-              missingStock.push(`${item.name} (Faltan: ${item.qty - (currentProduct?.stock || 0)})`);
-          }
-      });
-      if (missingStock.length > 0) {
-          triggerAlert("Stock Insuficiente", `No puedes entregar. Faltan:\n${missingStock.join('\n')}`, "error");
-          return;
-      }
       setReceiptDetails(null); 
       setDeliveryTransaction(transaction);
       setDeliveryPaymentMethod('Efectivo');
@@ -862,39 +711,35 @@ export default function PosApp() {
       setLoading(true);
       setProcessingMsg(selectedCourier === 'Yo (Directo)' ? "Cerrando Venta..." : "Enviando a Reparto...");
       
-      // VALIDATION FOR DIRECT DELIVERY: IF NOT PAID AND NOT INSTALLMENTS, BLOCK
-      if (selectedCourier === 'Yo (Directo)') {
-          const isInstallments = deliveryTransaction.paymentPlanType === 'installments';
-          const isPaid = deliveryTransaction.paymentStatus === 'paid';
-          const isLegacy = !deliveryTransaction.paymentPlanType; // Handle old data
-          
-          if (!isInstallments && !isPaid && !isLegacy) {
-               setLoading(false);
-               setProcessingMsg('');
-               triggerAlert("Pendiente de Pago", "El cliente tiene deuda pendiente. Registra el pago en Finanzas antes de cerrar la venta.", "error");
-               return;
-          }
-      }
-      
       try {
           const batch = writeBatch(db);
-          let finalTotalCost = 0;
+          
+          // Si estaba "Por Encargar" (pending_order), NO se descontó stock antes. Descontar ahora.
+          // Si estaba "Por Entregar" (pending_delivery), YA se descontó stock.
+          
+          let finalTotalCost = deliveryTransaction.totalCost;
           const updatedItems = [];
           
-          for (const item of (deliveryTransaction.items || [])) {
-               const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
-               finalTotalCost += totalCost;
-               updatedItems.push({
-                   ...item,
-                   fifoTotalCost: totalCost,
-                   fifoDetails: fifoDetails
-               });
-               batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
-               batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
+          if (deliveryTransaction.saleStatus === 'pending_order') {
+              finalTotalCost = 0; // Recalculamos costo FIFO porque recién sale
+              for (const item of (deliveryTransaction.items || [])) {
+                   const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
+                   finalTotalCost += totalCost;
+                   updatedItems.push({
+                       ...item,
+                       fifoTotalCost: totalCost,
+                       fifoDetails: fifoDetails
+                   });
+                   batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
+                   batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
+              }
+          } else {
+              // Ya estaba descontado, mantenemos items
+              updatedItems.push(...(deliveryTransaction.items || []));
           }
+          
           const transRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, deliveryTransaction.id);
           const margin = deliveryTransaction.total - finalTotalCost;
-          
           const nextStatus = selectedCourier === 'Yo (Directo)' ? 'completed' : 'in_transit';
           const now = new Date();
 
@@ -911,7 +756,7 @@ export default function PosApp() {
           await batch.commit();
           setIsDeliveryModalOpen(false);
           setDeliveryTransaction(null);
-          triggerAlert(nextStatus === 'completed' ? "Venta Cerrada" : "En Reparto", nextStatus === 'completed' ? "Stock descontado." : `Entregado a ${selectedCourier}. Stock descontado.`, "success");
+          triggerAlert(nextStatus === 'completed' ? "Venta Cerrada" : "En Reparto", nextStatus === 'completed' ? "Entregado." : `Entregado a ${selectedCourier}.`, "success");
       } catch (error) {
           console.error(error);
           triggerAlert("Error", "Fallo proceso.", "error");
@@ -922,15 +767,6 @@ export default function PosApp() {
   };
 
   const handleConfirmDeliveryClick = (transaction) => {
-      const isInstallments = transaction.paymentPlanType === 'installments';
-      const isPaid = transaction.paymentStatus === 'paid';
-      const isLegacy = !transaction.paymentPlanType;
-      
-      if (!isInstallments && !isPaid && !isLegacy) {
-          triggerAlert("Pago Incompleto", "No puedes confirmar la entrega. El cliente debe pagar el total o saldo pendiente. Ve a Finanzas.", "error");
-          return;
-      }
-
       setConfirmDeliveryModal({ show: true, transaction: transaction });
       setDeliveryDateInput(new Date().toISOString().split('T')[0]); 
   };
@@ -961,7 +797,6 @@ export default function PosApp() {
       }
   };
 
-  // Carrito
   const addToCart = (product) => {
     setCart(prev => {
       const existing = prev.find(p => p.id === product.id);
@@ -990,20 +825,11 @@ export default function PosApp() {
       setCatalogBrand(''); 
       setSelectedCycle(''); 
       setInstallmentInfo({ isInstallments: false, count: 1 });
-      // Reset Checkout
-      setDeliveryType('immediate');
       setPaymentPlanType('full');
-      setCheckoutData({
-          downPayment: '', 
-          installmentsCount: 3,
-          paymentMethod: 'Efectivo', 
-          firstPaymentDate: new Date().toISOString().split('T')[0],
-          initialReceiptFile: null
-      });
+      setCheckoutData({ installmentsCount: 3, installmentDates: {} });
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
 
-  // --- CREAR PEDIDO (PURCHASE) ---
   const handleCreateOrder = async () => {
     if (cart.length === 0) { triggerAlert("Vacío", "Agrega productos.", "info"); return; }
     if (!selectedSupplier) { triggerAlert("Falta Origen", "Selecciona si es Web o Catálogo.", "info"); return; }
@@ -1020,7 +846,7 @@ export default function PosApp() {
 
         await setDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), {
             id: newTransId,
-            displayId: displayId, // <--- GUARDAR ID
+            displayId: displayId, 
             type: 'order', 
             items: [...cart],
             total: cartTotal,
@@ -1045,7 +871,6 @@ export default function PosApp() {
     }
   };
 
-  // --- RECEPCIÓN STOCK ---
   const startCheckIn = (transaction) => {
       const explodedItems = [];
       (transaction.items || []).forEach((item) => {
@@ -1111,7 +936,6 @@ export default function PosApp() {
       }
   };
 
-  // --- FINANZAS: REGISTRAR PAGO (CORREGIDO PARA MULTIPLES ABONOS) ---
   const handleRegisterPayment = async () => {
       if(!selectedPaymentTx) return;
       const amount = parseInt(paymentAmountInput) || 0;
@@ -1135,50 +959,42 @@ export default function PosApp() {
       try {
           const txRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, selectedPaymentTx.id);
           
-          // Clonamos el cronograma
           let updatedSchedule = [...selectedPaymentTx.paymentSchedule];
           let updatedBalance = selectedPaymentTx.balance;
 
-          // Registro del pago individual para trazabilidad
           const newPaymentRecord = {
               amount: amount,
               date: Date.now() / 1000,
               method: paymentMethod || 'Efectivo',
               receiptUrl: receiptUrl,
-              id: Date.now().toString() // ID simple para el registro
+              id: Date.now().toString() 
           };
 
           if (selectedPaymentIndex !== null) {
-              // Lógica de Acumulación
               const item = updatedSchedule[selectedPaymentIndex];
-              const previousPaid = item.paidAmount || 0; // Lo que ya se había pagado de esta cuota
+              const previousPaid = item.paidAmount || 0; 
               const newTotalPaid = previousPaid + amount;
               
-              // Historial de pagos específico de esta cuota
               const itemHistory = item.paymentHistory ? [...item.paymentHistory, newPaymentRecord] : [newPaymentRecord];
 
               updatedSchedule[selectedPaymentIndex] = {
                   ...item,
-                  paidAmount: newTotalPaid, // Acumulamos
-                  paymentHistory: itemHistory, // Guardamos registro
-                  status: newTotalPaid >= item.amount ? 'paid' : 'partial', // Solo se cierra si cubre el total
-                  paidAt: Date.now() / 1000, // Fecha del último pago
-                  method: paymentMethod // Método del último pago
+                  paidAmount: newTotalPaid, 
+                  paymentHistory: itemHistory, 
+                  status: newTotalPaid >= item.amount ? 'paid' : 'partial', 
+                  paidAt: Date.now() / 1000, 
+                  method: paymentMethod 
               };
-
-              // Si pagó de más en esta cuota (ej: propina o error), el balance global baja igual.
               updatedBalance -= amount;
-
           } else {
-              // Fallback por si no seleccionó indice (pago global)
               updatedBalance -= amount;
           }
 
           const newStatus = updatedBalance <= 0 ? 'paid' : 'partial';
           
-          // Si el balance llega a 0 y era entrega inmediata, finalizar la venta (fecha cierre)
           const extraUpdates = {};
-          if (updatedBalance <= 0 && selectedPaymentTx.saleStatus === 'completed' && !selectedPaymentTx.finalizedAt) {
+          // Solo finalizamos la fecha si ya está completada la entrega
+          if (updatedBalance <= 0 && (selectedPaymentTx.saleStatus === 'completed' || selectedPaymentTx.saleStatus === 'pending_delivery') && !selectedPaymentTx.finalizedAt) {
                extraUpdates.finalizedAt = { seconds: Date.now() / 1000 };
           }
 
@@ -1192,7 +1008,7 @@ export default function PosApp() {
           setPaymentModalOpen(false);
           setPaymentAmountInput('');
           setSelectedPaymentTx(null);
-          setPaymentReceiptFile(null); // Clear file
+          setPaymentReceiptFile(null); 
           triggerAlert("Abono Registrado", `Se abonaron $${formatMoney(amount)}.`, "success");
 
       } catch(e) {
@@ -1209,7 +1025,6 @@ export default function PosApp() {
     catch (e) { console.error(e); triggerAlert("Error", "No se pudo guardar.", "error"); }
   };
 
-  // --- GESTION DE CATEGORÍAS: ELIMINAR ---
   const handleDeleteCategory = async (catId) => {
       if(!window.confirm("¿Seguro que quieres borrar esta categoría?")) return;
       try {
@@ -1274,7 +1089,6 @@ export default function PosApp() {
             triggerAlert("Actualizado", "Cliente editado correctamente.", "success");
         } else {
             const docRef = await addDoc(collection(db, `artifacts/${APP_ID}/public/data/clients`), clientData); 
-            // Si estamos en checkout, autoseleccionar
             if (isCheckoutModalOpen) {
                  setSelectedClient(docRef.id);
                  setClientSearchTerm(clientData.name);
@@ -1312,7 +1126,6 @@ export default function PosApp() {
       } catch (e) { triggerAlert("Error", "Fallo al guardar.", "error"); }
   };
 
-  // Filters & Reports
   const filteredProducts = products.filter(p => {
       const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.category.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = selectedCategoryFilter === 'ALL' || p.category === selectedCategoryFilter;
@@ -1328,7 +1141,6 @@ export default function PosApp() {
       return c.name.toLowerCase().includes(term) || (c.department && c.department.toLowerCase().includes(term));
   });
 
-  // FINANZAS FILTER
   const pendingPaymentTransactions = useMemo(() => {
       return transactions.filter(t => t.type === 'sale' && t.paymentStatus !== 'paid').sort((a,b) => b.date.seconds - a.date.seconds);
   }, [transactions]);
@@ -1337,7 +1149,8 @@ export default function PosApp() {
       const all = transactions.filter(t => t.type === 'sale');
       return {
           completed: all.filter(t => t.saleStatus === 'completed'),
-          pending: all.filter(t => t.saleStatus === 'pending'),
+          pending_delivery: all.filter(t => t.saleStatus === 'pending_delivery'),
+          pending_order: all.filter(t => t.saleStatus === 'pending_order'),
           inTransit: all.filter(t => t.saleStatus === 'in_transit') 
       };
   }, [transactions]);
@@ -1362,7 +1175,6 @@ export default function PosApp() {
       return s ? s.name : id || 'Proveedor'; 
   };
 
-  // --- LOGICA REPORTES ---
   const expiringProducts = useMemo(() => {
       const expiring = inventoryBatches.filter(b => b.remainingQty > 0 && b.expirationDate);
       expiring.sort((a, b) => new Date(a.expirationDate) - new Date(b.expirationDate));
@@ -1372,102 +1184,25 @@ export default function PosApp() {
   const pendingOrdersData = useMemo(() => {
       const pendingMap = {}; 
       const tempStock = {}; 
-
       products.forEach(p => tempStock[p.id] = p.stock);
-
-      const pendingTrans = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'pending');
-      
+      const pendingTrans = transactions.filter(t => t.type === 'sale' && (t.saleStatus === 'pending' || t.saleStatus === 'pending_order'));
       pendingTrans.sort((a,b) => (a.date.seconds - b.date.seconds));
-
       pendingTrans.forEach(t => {
           (t.items || []).forEach(item => {
                const product = products.find(p => p.id === item.id);
                const brand = product ? product.brand : (item.brand || 'Sin Marca');
                const currentStock = tempStock[item.id] || 0;
-
                if (currentStock < item.qty) {
                    const missingQty = item.qty - currentStock;
-                   
                    if (!pendingMap[brand]) pendingMap[brand] = [];
                    const existingItem = pendingMap[brand].find(i => i.id === item.id);
-                   
-                   if (existingItem) {
-                       existingItem.qty += missingQty;
-                   } else {
-                       pendingMap[brand].push({ ...item, qty: missingQty });
-                   }
+                   if (existingItem) { existingItem.qty += missingQty; } else { pendingMap[brand].push({ ...item, qty: missingQty }); }
                    tempStock[item.id] = 0;
-               } else {
-                   tempStock[item.id] -= item.qty;
-               }
+               } else { tempStock[item.id] -= item.qty; }
           });
       });
       return pendingMap;
   }, [transactions, products]);
-
-  const getOrderStatus = (transaction) => {
-      let hasShortage = false;
-      for (let item of (transaction.items || [])) {
-          const prod = products.find(p => p.id === item.id);
-          if (!prod || prod.stock < item.qty) {
-              hasShortage = true;
-              break;
-          }
-      }
-      return hasShortage ? 'waiting' : 'ready';
-  };
-
-  const setQuickDate = (type) => {
-      const now = new Date();
-      const formatDate = (d) => d.toLocaleDateString('en-CA');
-      let start = new Date();
-      let end = new Date();
-      if (type === 'today') { /* no op */ }
-      else if (type === 'yesterday') { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
-      else if (type === 'week') { start.setDate(start.getDate() - start.getDay() + (start.getDay() === 0 ? -6 : 1)); }
-      else if (type === 'month') { start.setDate(1); }
-      setReportStartDate(formatDate(start)); setReportEndDate(formatDate(end));
-  };
-
-  const reportData = useMemo(() => {
-    const start = new Date(`${reportStartDate}T00:00:00`);
-    const end = new Date(`${reportEndDate}T23:59:59.999`);
-    const reportTrans = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'completed' && t.date && t.date.seconds && new Date(t.date.seconds * 1000) >= start && new Date(t.date.seconds * 1000) <= end);
-    
-    const totalSales = reportTrans.reduce((acc, t) => acc + t.total, 0);
-    const totalCost = reportTrans.reduce((acc, t) => acc + (t.totalCost || 0), 0);
-    const margin = totalSales - totalCost;
-    
-    const productMap = new Map();
-    reportTrans.forEach(t => (t.items || []).forEach(i => {
-        const ex = productMap.get(i.id) || { name: i.name, qty: 0, revenue: 0 };
-        productMap.set(i.id, { ...ex, qty: ex.qty + i.qty, revenue: ex.revenue + (i.qty * i.transactionPrice) });
-    }));
-    const productRanking = Array.from(productMap.values()).sort((a,b) => b.revenue - a.revenue).slice(0, 5);
-
-    const clientMap = new Map();
-    reportTrans.forEach(t => {
-        const cname = getClientName(t.clientId);
-        const ex = clientMap.get(cname) || { name: cname, count: 0, total: 0 };
-        clientMap.set(cname, { ...ex, count: ex.count + 1, total: ex.total + t.total });
-    });
-    const clientRanking = Array.from(clientMap.values()).sort((a,b) => b.total - a.total).slice(0, 5);
-
-    const timeline = {};
-    reportTrans.forEach(t => {
-        if (t.date && t.date.seconds) {
-            const d = new Date(t.date.seconds * 1000);
-            const k = d.toISOString().split('T')[0]; 
-            timeline[k] = (timeline[k] || 0) + t.total;
-        }
-    });
-    const timelineData = Object.entries(timeline).sort((a,b) => a[0].localeCompare(b[0])).map(([k,v]) => {
-        const [y,m,d] = k.split('-');
-        return { date: `${d}/${m}`, total: v };
-    });
-
-    return { totalSales, totalCost, margin, marginPercent: totalSales > 0 ? (margin/totalSales)*100 : 0, productRanking, clientRanking, timelineData };
-  }, [transactions, reportStartDate, reportEndDate]);
 
   const getAlertConfig = (type) => {
     switch(type) {
@@ -1480,11 +1215,11 @@ export default function PosApp() {
   const getHeaderTitle = () => {
       switch(view) {
           case 'pos': return 'Registra Venta';
-          case 'purchases': return 'Pedidos'; 
-          case 'receipts': return 'Ventas'; 
+          case 'purchases': return 'Compras'; 
+          case 'receipts': return 'Pedidos'; 
           case 'inventory': return 'Inventario';
           case 'reports': return 'Reportes';
-          case 'finances': return 'Finanzas';
+          case 'finances': return 'Deudores';
           case 'clients': return 'Clientes';
           default: return view;
       }
@@ -1495,7 +1230,6 @@ export default function PosApp() {
   return (
     <div className="flex flex-col h-screen bg-stone-50 text-stone-800 font-sans overflow-hidden relative">
       
-      {/* --- GLOBAL LOADING OVERLAY --- */}
       {loading && processingMsg && (
           <div className="fixed inset-0 bg-black/50 z-[110] flex flex-col items-center justify-center backdrop-blur-sm">
               <div className="bg-white p-6 rounded-2xl shadow-2xl flex flex-col items-center animate-in fade-in zoom-in duration-200">
@@ -1505,7 +1239,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* Alert - Z-Index aumentado a 120 */}
       {alertState.show && (
         <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className={`bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center border-t-4 ${getAlertConfig(alertState.type).border}`}>
@@ -1517,7 +1250,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* Confirmation Modal - Z-Index aumentado a 120 */}
       {confirmationState.show && (
         <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center border-t-4 border-orange-500">
@@ -1532,7 +1264,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* Header */}
       <header className={`${view === 'purchases' ? 'bg-stone-800' : view === 'receipts' ? 'bg-stone-700' : view === 'finances' ? 'bg-emerald-700' : 'bg-orange-500'} text-white p-2 shadow-md flex justify-between items-center z-10 shrink-0`}>
         <h1 className="font-bold text-base flex items-center gap-2">
             {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'inventory' ? <Package className="w-5 h-5"/> : view === 'finances' ? <DollarSign className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
@@ -1540,10 +1271,8 @@ export default function PosApp() {
         </h1>
       </header>
 
-      {/* Main */}
       <main className={`flex-1 overflow-hidden relative flex flex-col ${view !== 'pos' && view !== 'purchases' ? 'overflow-y-auto' : ''}`}>
         
-        {/* POS VIEW */}
         {(view === 'pos') && (
             <div className="flex flex-col h-full relative">
                 <div className="p-2 bg-white border-b shadow-sm space-y-2">
@@ -1569,7 +1298,6 @@ export default function PosApp() {
                         ))}
                     </div>
                 </div>
-                {/* Cart POS */}
                 {cart.length > 0 && (
                     <div className="fixed bottom-[76px] left-0 w-full z-20 flex flex-col shadow-2xl">
                         <div className="rounded-t-3xl border-t p-4 bg-white">
@@ -1601,7 +1329,6 @@ export default function PosApp() {
             </div>
         )}
 
-        {/* FINANZAS VIEW */}
         {view === 'finances' && (
              <div className="p-4 pb-24">
                  <div className="mb-6 bg-white p-6 rounded-2xl shadow-sm border border-emerald-100 flex flex-col items-center justify-center text-center">
@@ -1635,7 +1362,7 @@ export default function PosApp() {
                              
                              <div className="flex justify-between items-center text-xs mb-3 bg-stone-50 p-2 rounded-lg">
                                  <span className="text-stone-500">Total Venta: <strong>${formatMoney(tx.total)}</strong></span>
-                                 <span className="font-bold text-emerald-600 bg-white px-2 py-0.5 rounded border border-emerald-100 shadow-sm">{tx.paymentPlanType === 'installments' ? 'En Cuotas' : 'Saldo/Abono'}</span>
+                                 <span className="font-bold text-emerald-600 bg-white px-2 py-0.5 rounded border border-emerald-100 shadow-sm">{tx.paymentPlanType === 'installments' ? 'En Cuotas' : 'Saldo Pendiente'}</span>
                              </div>
                              
                              <div className="relative w-full bg-stone-200 h-2 rounded-full overflow-hidden">
@@ -1648,7 +1375,6 @@ export default function PosApp() {
              </div>
         )}
 
-        {/* VISTA: PEDIDOS (COMPRAS) */}
         {view === 'purchases' && (
             <div className="flex flex-col h-full">
                 {checkInOrder ? (
@@ -1694,7 +1420,6 @@ export default function PosApp() {
             </div>
         )}
         
-        {/* INVENTORY */}
         {view === 'inventory' && (
             <div className="p-4 overflow-y-auto pb-24">
                 <div className="flex justify-between mb-4 gap-2">
@@ -1727,7 +1452,6 @@ export default function PosApp() {
             </div>
         )}
         
-        {/* VENTA (Receipts) */}
         {view === 'receipts' && (
             <div className="p-4 overflow-y-auto pb-24">
                 <div className="mb-6">
@@ -1744,7 +1468,7 @@ export default function PosApp() {
                                             {formatDateSimple(t.date.seconds)}
                                         </span>
                                     </div>
-                                    <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-xs text-stone-500 italic">{t.paymentMethod}</span></div>
+                                    <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-xs text-stone-500 italic">{t.paymentMethod || 'Sin pago en caja'}</span></div>
                                 </div>
                                 <div className="flex gap-2 pt-2 border-t">
                                     <button onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} className="py-2 px-3 bg-red-50 text-red-600 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-red-100 transition-colors"><Undo2 className="w-4 h-4"/> No Retiró</button>
@@ -1754,14 +1478,14 @@ export default function PosApp() {
                         ))}
                     </div>
                 </div>
+
                 <div className="mb-6">
-                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><Clock className="w-5 h-5 text-blue-500"/> Pendientes de Entrega</h2>
+                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><PackageCheck className="w-5 h-5 text-blue-500"/> Por Entregar (Stock Reservado)</h2>
                     <div className="space-y-3">
-                        {filteredSales.pending.length === 0 && <div className="text-stone-400 text-sm text-center py-4">No hay pedidos pendientes.</div>}
-                        {filteredSales.pending.map(t => {
-                            const status = getOrderStatus(t);
+                        {filteredSales.pending_delivery.length === 0 && <div className="text-stone-400 text-sm text-center py-4">No hay pedidos por entregar.</div>}
+                        {filteredSales.pending_delivery.map(t => {
                             return (
-                                <div key={t.id} className={`p-4 bg-white rounded-xl shadow-sm border border-l-4 ${status === 'ready' ? 'border-l-green-500' : 'border-l-stone-300'}`}>
+                                <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-green-500">
                                     <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
                                         <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
                                             <span className="text-xs text-stone-400">
@@ -1769,11 +1493,11 @@ export default function PosApp() {
                                                 {formatDateSimple(t.date.seconds)}
                                             </span>
                                         </div>
-                                        <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div>{status === 'ready' ? (<span className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold uppercase">Disponible</span>) : (<span className="text-[10px] bg-stone-100 text-stone-500 px-2 py-1 rounded font-bold uppercase">Falta Stock</span>)}</div>
+                                        <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold uppercase">Listo para Entrega</span></div>
                                     </div>
                                     <div className="flex gap-2 pt-2 border-t">
-                                        {status === 'ready' && (<button onClick={() => handleNotifyClient(t)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1"><MessageCircle className="w-4 h-4"/> Avisar</button>)}
-                                        <button onClick={() => handleDeliverOrder(t)} className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 ${status === 'ready' ? 'bg-blue-600 text-white' : 'bg-stone-200 text-stone-400 cursor-not-allowed'}`} disabled={status !== 'ready'}><Truck className="w-4 h-4"/> Despachar</button>
+                                        <button onClick={() => handleNotifyClient(t)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1"><MessageCircle className="w-4 h-4"/> Avisar</button>
+                                        <button onClick={() => handleDeliverOrder(t)} className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1"><Truck className="w-4 h-4"/> Despachar</button>
                                         <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
                                     </div>
                                 </div>
@@ -1781,6 +1505,33 @@ export default function PosApp() {
                         })}
                     </div>
                 </div>
+
+                <div className="mb-6">
+                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-amber-500"/> Por Encargar (Falta Stock)</h2>
+                    <div className="space-y-3">
+                        {filteredSales.pending_order.length === 0 && <div className="text-stone-400 text-sm text-center py-4">No hay pedidos por encargar.</div>}
+                        {filteredSales.pending_order.map(t => {
+                            return (
+                                <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-amber-500">
+                                    <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
+                                        <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
+                                            <span className="text-xs text-stone-400">
+                                                <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
+                                                {formatDateSimple(t.date.seconds)}
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-1 rounded font-bold uppercase">Falta Stock</span></div>
+                                    </div>
+                                    <div className="flex gap-2 pt-2 border-t">
+                                        <button onClick={() => handleDeliverOrder(t)} className="flex-1 py-2 bg-stone-200 text-stone-400 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-not-allowed" disabled><Clock className="w-4 h-4"/> Esperando Stock</button>
+                                        <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+
                 <div>
                     <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Ventas</h2>
                     <div className="space-y-3">
@@ -1795,7 +1546,6 @@ export default function PosApp() {
             </div>
         )}
 
-        {/* REPORTS */}
         {view === 'reports' && (
             <div className="p-4 space-y-6 pb-24">
                 <div className="flex justify-between items-center mb-2">
@@ -1825,7 +1575,6 @@ export default function PosApp() {
             </div>
         )}
 
-        {/* CLIENTS */}
         {view === 'clients' && (
             <div className="p-4 pb-24 overflow-y-auto">
                 <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); }} className="w-full py-3 bg-orange-600 text-white font-bold rounded-xl mb-4 shadow-lg flex items-center justify-center gap-2"><Plus className="w-5 h-5"/> Crear Nuevo Cliente</button>
@@ -1848,12 +1597,9 @@ export default function PosApp() {
 
       </main>
 
-      {/* --- NUEVO CHECKOUT MODAL MODERNO --- */}
       {isCheckoutModalOpen && (
           <div className="fixed inset-0 bg-stone-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden scale-100">
-                  
-                  {/* Modal Header */}
                   <div className="px-6 py-4 border-b border-stone-100 flex justify-between items-center bg-white z-10">
                       <div>
                           <h2 className="font-black text-xl text-stone-800 tracking-tight">Finalizar Pedido</h2>
@@ -1865,14 +1611,11 @@ export default function PosApp() {
                   </div>
                   
                   <div className="flex-1 overflow-y-auto p-6 space-y-8">
-                      
-                      {/* SECCIÓN 1: CLIENTE */}
                       <div>
                           <div className="flex items-center gap-2 mb-3">
                               <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">1</div>
                               <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Cliente</h3>
                           </div>
-                          
                           <div className="relative" ref={clientInputRef}>
                               <div className="relative">
                                   <UserPlus className="absolute left-4 top-3.5 w-5 h-5 text-stone-400"/>
@@ -1889,7 +1632,6 @@ export default function PosApp() {
                                       </div>
                                   )}
                               </div>
-                              
                               {showClientOptions && (
                                   <div className="absolute top-full left-0 w-full bg-white border border-stone-100 rounded-xl shadow-xl max-h-48 overflow-y-auto z-20 mt-2 p-2">
                                       <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); setShowClientOptions(false); }} className="w-full p-3 text-left text-blue-600 font-bold hover:bg-blue-50 rounded-lg flex items-center gap-2"><Plus className="w-4 h-4"/> Crear Nuevo Cliente</button>
@@ -1911,7 +1653,6 @@ export default function PosApp() {
                           </div>
                       </div>
 
-                      {/* SECCIÓN 2: DISPONIBILIDAD Y ENTREGA (UI MEJORADA) */}
                         <div className={!selectedClient ? 'opacity-40 pointer-events-none grayscale transition-all' : 'transition-all'}>
                             <div className="flex items-center gap-2 mb-3">
                                 <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">2</div>
@@ -1929,13 +1670,12 @@ export default function PosApp() {
                                         </h4>
                                         <p className={`text-xs font-medium leading-relaxed ${stockAnalysis.canDeliverAll ? 'text-emerald-700' : 'text-amber-700'}`}>
                                             {stockAnalysis.canDeliverAll 
-                                                ? 'Todos los productos están listos para entrega inmediata.' 
-                                                : 'Algunos productos no están disponibles y quedarán pendientes.'}
+                                                ? 'Se descontará del inventario y pasará a "Por Entregar".' 
+                                                : 'Se registrará como pendiente de llegada "Por Encargar".'}
                                         </p>
                                     </div>
                                 </div>
 
-                                {/* Lista de faltantes si aplica */}
                                 {!stockAnalysis.canDeliverAll && (
                                     <div className="mt-4 bg-white rounded-xl border border-amber-100 p-3 shadow-sm">
                                         <div className="text-[10px] font-bold text-amber-400 uppercase mb-2 tracking-wider">Productos Faltantes</div>
@@ -1952,195 +1692,64 @@ export default function PosApp() {
                                         </div>
                                     </div>
                                 )}
-                                
-                                {/* Toggle Switch Moderno */}
-                                <div className="mt-4 pt-4 border-t border-black/5 flex justify-between items-center">
-                                    <span className="text-xs font-bold text-stone-500 uppercase">Modo de Entrega</span>
-                                    <button 
-                                        onClick={() => setDeliveryType(prev => prev === 'immediate' ? 'order' : 'immediate')}
-                                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all shadow-sm border ${
-                                            deliveryType === 'immediate' 
-                                            ? 'bg-stone-800 text-white border-stone-800' 
-                                            : 'bg-white text-stone-500 border-stone-200'
-                                        }`}
-                                    >
-                                        {deliveryType === 'immediate' ? <ToggleRight className="w-4 h-4"/> : <ToggleLeft className="w-4 h-4"/>}
-                                        {deliveryType === 'immediate' ? 'Entrega Inmediata' : 'Por Encargo'}
-                                    </button>
-                                </div>
                             </div>
                         </div>
 
-                      {/* SECCIÓN 3: PLAN DE PAGO */}
                       <div className={!selectedClient ? 'opacity-40 pointer-events-none grayscale transition-all' : 'transition-all'}>
                           <div className="flex items-center gap-2 mb-3">
                               <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">3</div>
-                              <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Plan de Pago</h3>
+                              <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Plan de Pago (Deuda)</h3>
                           </div>
                           
                           <div className="bg-stone-100 p-1 rounded-xl flex mb-6">
-                              {['full', 'deposit', 'installments'].map(type => (
+                              {['full', 'installments'].map(type => (
                                   <button 
                                       key={type}
                                       onClick={() => setPaymentPlanType(type)}
                                       className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-all ${paymentPlanType === type ? 'bg-white text-stone-900 shadow-sm ring-1 ring-black/5' : 'text-stone-500 hover:text-stone-700'}`}
                                   >
-                                      {type === 'full' ? 'Pago Completo' : type === 'deposit' ? 'Abono' : 'Cuotas'}
+                                      {type === 'full' ? 'Pago Completo' : 'Cuotas'}
                                   </button>
                               ))}
                           </div>
 
-                          {/* Dynamic Content based on Payment Plan */}
                           <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                              
-                              {/* PAGO COMPLETO */}
                               {paymentPlanType === 'full' && (
                                   <div className="bg-stone-50 rounded-2xl p-6 border border-stone-200 text-center">
-                                      <div className="text-stone-500 text-xs font-bold uppercase mb-1">Total a Pagar</div>
+                                      <div className="text-stone-500 text-xs font-bold uppercase mb-1">Total a Deuda</div>
                                       <div className="text-4xl font-black text-stone-800 mb-2">${formatMoney(cartTotal)}</div>
                                       <div className="text-xs text-stone-400 bg-white inline-block px-3 py-1 rounded-full border border-stone-100 mb-4">
-                                          {deliveryType === 'immediate' ? 'Se registra pago inmediato' : 'Se registra como deuda total'}
-                                      </div>
-
-                                      {/* Si es entrega inmediata y pago completo, necesitamos registrar el pago REAL ahora */}
-                                      {deliveryType === 'immediate' && (
-                                          <div className="text-left space-y-4 pt-4 border-t border-stone-200">
-                                              <div>
-                                                  <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago</label>
-                                                  <div className="grid grid-cols-3 gap-2">
-                                                      {[
-                                                          { id: 'Efectivo', icon: Banknote, label: 'Efectivo' },
-                                                          { id: 'Transferencia', icon: QrCode, label: 'Transf.' },
-                                                          { id: 'Debito', icon: DebitCard, label: 'Débito' }
-                                                      ].map((m) => (
-                                                          <button 
-                                                              key={m.id}
-                                                              onClick={() => setCheckoutData({...checkoutData, paymentMethod: m.id})}
-                                                              className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${checkoutData.paymentMethod === m.id ? 'bg-stone-800 text-white border-stone-800 shadow-md' : 'bg-white text-stone-500 border-stone-200 hover:bg-stone-50'}`}
-                                                          >
-                                                              <m.icon className="w-5 h-5 mb-1"/>
-                                                              <span className="text-[10px] font-bold">{m.label}</span>
-                                                          </button>
-                                                      ))}
-                                                  </div>
-                                              </div>
-
-                                              <div className="relative group">
-                                                  <input 
-                                                      type="file" 
-                                                      accept="image/*"
-                                                      onChange={(e) => setCheckoutData({...checkoutData, initialReceiptFile: e.target.files[0]})}
-                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                  />
-                                                  <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-all ${checkoutData.initialReceiptFile ? 'border-green-400 bg-green-50' : 'border-stone-300 hover:border-stone-400 bg-white'}`}>
-                                                      <Upload className={`w-6 h-6 mx-auto mb-2 ${checkoutData.initialReceiptFile ? 'text-green-600' : 'text-stone-400'}`}/>
-                                                      <div className={`text-xs font-bold ${checkoutData.initialReceiptFile ? 'text-green-700' : 'text-stone-600'}`}>
-                                                          {checkoutData.initialReceiptFile ? "Comprobante Listo" : "Subir Comprobante"}
-                                                      </div>
-                                                      <div className="text-[10px] text-stone-400 mt-1 truncate px-4">
-                                                          {checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "Haz click o arrastra la imagen"}
-                                                      </div>
-                                                  </div>
-                                              </div>
-                                          </div>
-                                      )}
-                                  </div>
-                              )}
-
-                              {/* ABONO */}
-                              {paymentPlanType === 'deposit' && (
-                                  <div className="space-y-5">
-                                      <div>
-                                          <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Monto Abono / Pie</label>
-                                          <div className="relative">
-                                              <MoneyInput 
-                                                  className="w-full pl-4 pr-4 py-4 bg-white border border-stone-200 rounded-2xl text-xl font-black text-stone-800 focus:ring-2 focus:ring-stone-900 outline-none text-center" 
-                                                  value={checkoutData.downPayment}
-                                                  onChange={val => setCheckoutData({...checkoutData, downPayment: val})}
-                                                  placeholder="$0"
-                                              />
-                                          </div>
-                                      </div>
-                                      
-                                      {/* Selector de Medio de Pago Moderno */}
-                                      {(Number(checkoutData.downPayment) > 0) && (
-                                          <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
-                                              <div>
-                                                  <label className="block text-xs font-bold uppercase text-stone-400 mb-2">Medio de Pago (Abono)</label>
-                                                  <div className="grid grid-cols-3 gap-2">
-                                                      {[
-                                                          { id: 'Efectivo', icon: Banknote, label: 'Efectivo' },
-                                                          { id: 'Transferencia', icon: QrCode, label: 'Transf.' },
-                                                          { id: 'Debito', icon: DebitCard, label: 'Débito' }
-                                                      ].map((m) => (
-                                                          <button 
-                                                              key={m.id}
-                                                              onClick={() => setCheckoutData({...checkoutData, paymentMethod: m.id})}
-                                                              className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${checkoutData.paymentMethod === m.id ? 'bg-stone-800 text-white border-stone-800 shadow-md scale-[1.02]' : 'bg-white text-stone-500 border-stone-200 hover:bg-stone-50'}`}
-                                                          >
-                                                              <m.icon className="w-5 h-5 mb-1"/>
-                                                              <span className="text-[10px] font-bold">{m.label}</span>
-                                                          </button>
-                                                      ))}
-                                                  </div>
-                                              </div>
-
-                                              <div className="relative group">
-                                                  <input 
-                                                      type="file" 
-                                                      accept="image/*"
-                                                      onChange={(e) => setCheckoutData({...checkoutData, initialReceiptFile: e.target.files[0]})}
-                                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                  />
-                                                  <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-all ${checkoutData.initialReceiptFile ? 'border-green-400 bg-green-50' : 'border-stone-300 hover:border-stone-400 bg-white'}`}>
-                                                      <Upload className={`w-6 h-6 mx-auto mb-2 ${checkoutData.initialReceiptFile ? 'text-green-600' : 'text-stone-400'}`}/>
-                                                      <div className={`text-xs font-bold ${checkoutData.initialReceiptFile ? 'text-green-700' : 'text-stone-600'}`}>
-                                                          {checkoutData.initialReceiptFile ? "Comprobante Cargado" : "Subir Comprobante"}
-                                                      </div>
-                                                      <div className="text-[10px] text-stone-400 mt-1 truncate px-4">
-                                                          {checkoutData.initialReceiptFile ? checkoutData.initialReceiptFile.name : "Toca para seleccionar imagen"}
-                                                      </div>
-                                                  </div>
-                                              </div>
-                                          </div>
-                                      )}
-
-                                      <div className="flex justify-between items-center p-4 bg-red-50 rounded-xl border border-red-100">
-                                          <span className="text-red-800 font-bold text-sm">Saldo Restante</span>
-                                          <span className="text-red-600 font-black text-xl">${formatMoney(Math.max(0, cartTotal - Number(checkoutData.downPayment)))}</span>
+                                          El pago se registrará exclusivamente en el módulo Deudores.
                                       </div>
                                   </div>
                               )}
 
-                              {/* CUOTAS */}
                               {paymentPlanType === 'installments' && (
                                   <div className="space-y-4">
-                                      <div className="grid grid-cols-2 gap-4">
-                                          <div>
-                                              <label className="block text-xs font-bold uppercase text-stone-500 mb-2">N° Cuotas</label>
-                                              <select className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl font-bold outline-none" value={checkoutData.installmentsCount} onChange={e => setCheckoutData({...checkoutData, installmentsCount: e.target.value})}>
-                                                  {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
-                                              </select>
-                                          </div>
-                                          <div>
-                                              <label className="block text-xs font-bold uppercase text-stone-500 mb-2">1er Pago</label>
-                                              <input type="date" className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl font-medium text-xs outline-none" value={checkoutData.firstPaymentDate} onChange={e => setCheckoutData({...checkoutData, firstPaymentDate: e.target.value})} />
-                                          </div>
+                                      <div>
+                                          <label className="block text-xs font-bold uppercase text-stone-500 mb-2">Cantidad de Cuotas</label>
+                                          <select className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl font-bold outline-none" value={checkoutData.installmentsCount} onChange={e => setCheckoutData({...checkoutData, installmentsCount: e.target.value, installmentDates: {}})}>
+                                              {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
+                                          </select>
                                       </div>
                                       
-                                      <div className="bg-white border border-stone-100 rounded-xl overflow-hidden shadow-sm">
-                                          <div className="bg-stone-50 px-4 py-2 border-b border-stone-100 text-xs font-bold text-stone-500 uppercase">Proyección de Pagos</div>
-                                          <div className="divide-y divide-stone-50">
-                                              {calculatePaymentSchedule(cartTotal, 'installments', checkoutData).map((p, i) => (
-                                                  <div key={i} className="px-4 py-3 flex justify-between items-center">
-                                                      <div className="flex items-center gap-3">
-                                                          <div className="w-6 h-6 rounded-full bg-stone-100 text-stone-500 flex items-center justify-center text-[10px] font-bold">{i+1}</div>
-                                                          <span className="text-sm font-medium text-stone-700">{new Date(p.date * 1000).toLocaleDateString()}</span>
-                                                      </div>
-                                                      <span className="font-bold text-stone-800">${formatMoney(p.amount)}</span>
-                                                  </div>
-                                              ))}
-                                          </div>
+                                      <div className="space-y-2">
+                                          <label className="block text-xs font-bold uppercase text-stone-500 mb-1">Fechas de Vencimiento</label>
+                                          {Array.from({length: parseInt(checkoutData.installmentsCount)}).map((_, idx) => (
+                                              <div key={idx} className="flex items-center gap-3 bg-white p-2 rounded-xl border border-stone-100">
+                                                  <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center font-bold text-stone-500 text-xs">{idx+1}</div>
+                                                  <div className="flex-1 text-sm font-bold text-stone-700">${formatMoney(Math.round(cartTotal / parseInt(checkoutData.installmentsCount)))}</div>
+                                                  <input 
+                                                      type="date" 
+                                                      className="p-2 bg-stone-50 rounded-lg border-none outline-none text-xs font-bold text-stone-600"
+                                                      value={checkoutData.installmentDates[idx] || ''}
+                                                      onChange={(e) => {
+                                                          const newDates = {...checkoutData.installmentDates, [idx]: e.target.value};
+                                                          setCheckoutData({...checkoutData, installmentDates: newDates});
+                                                      }}
+                                                  />
+                                              </div>
+                                          ))}
                                       </div>
                                   </div>
                               )}
@@ -2148,7 +1757,6 @@ export default function PosApp() {
                       </div>
                   </div>
 
-                  {/* Footer Actions */}
                   <div className="p-6 border-t border-stone-100 bg-white z-10">
                       <button 
                           onClick={handleConfirmCheckout} 
@@ -2166,7 +1774,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- FINANZAS: MODAL DE PAGO --- */}
       {paymentModalOpen && selectedPaymentTx && (
           <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
@@ -2181,7 +1788,6 @@ export default function PosApp() {
                   <div className="flex-1 overflow-y-auto p-5">
                       <div className="mb-6 space-y-3">
                           {(selectedPaymentTx.paymentSchedule || []).map((item, idx) => {
-                            // Calculamos progreso visual
                             const paidSoFar = item.paidAmount || 0;
                             const progress = Math.min(100, (paidSoFar / item.amount) * 100);
                             const isFullyPaid = paidSoFar >= item.amount;
@@ -2190,9 +1796,8 @@ export default function PosApp() {
                               <div 
                                   key={idx} 
                                   onClick={() => {
-                                      if (isFullyPaid) return; // Si ya está pagado total, no dejar clickear
+                                      if (isFullyPaid) return; 
                                       setSelectedPaymentIndex(idx);
-                                      // Sugerimos pagar LO QUE FALTA, no el total original
                                       setPaymentAmountInput(item.amount - paidSoFar);
                                   }}
                                   className={`p-4 rounded-xl border-2 transition-all cursor-pointer relative overflow-hidden group
@@ -2203,7 +1808,6 @@ export default function PosApp() {
                                               : 'bg-white border-stone-100 hover:border-emerald-200'
                                       }`}
                               >
-                                  {/* Barra de progreso de fondo */}
                                   {!isFullyPaid && paidSoFar > 0 && (
                                       <div className="absolute left-0 top-0 bottom-0 bg-emerald-100 transition-all duration-500" style={{width: `${progress}%`, zIndex: 0}}></div>
                                   )}
@@ -2216,7 +1820,6 @@ export default function PosApp() {
                                           <div className="text-xs text-stone-500 mt-0.5">
                                               {item.date ? new Date(item.date * 1000).toLocaleDateString() : 'Fecha abierta'}
                                           </div>
-                                          {/* Mostrar historial chiquito si hay abonos parciales */}
                                           {item.paymentHistory && item.paymentHistory.length > 0 && (
                                               <div className="text-[9px] text-stone-400 mt-1">
                                                   {item.paymentHistory.length} abonos registrados
@@ -2227,7 +1830,6 @@ export default function PosApp() {
                                           <div className={`font-black ${isFullyPaid ? 'text-emerald-700' : 'text-stone-800'}`}>
                                               ${formatMoney(item.amount)}
                                           </div>
-                                          {/* Mostrar cuánto lleva pagado si es parcial */}
                                           {!isFullyPaid && paidSoFar > 0 && (
                                               <div className="text-[10px] font-bold text-emerald-600">
                                                   Pagado: ${formatMoney(paidSoFar)}
@@ -2305,7 +1907,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- RESTAURACIÓN: MODAL DESPACHO/ENTREGA --- */}
       {isDeliveryModalOpen && deliveryTransaction && (
         <div className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4">
             <div className="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl">
@@ -2344,7 +1945,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* --- RESTAURACIÓN: MODAL POR VENCER --- */}
       {showExpiringModal && (
         <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -2377,7 +1977,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* --- RESTAURACIÓN: MODAL STOCK (ALERT) --- */}
       {showStockAlertModal && (
           <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
@@ -2395,7 +1994,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- RESTAURACIÓN: MODAL PENDING ORDERS (COMPRAR) --- */}
       {showPendingOrdersModal && (
         <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -2426,7 +2024,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* MODAL CREAR/EDITAR CLIENTE */}
       {isClientModalOpen && (
           <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
               <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
@@ -2441,7 +2038,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* MODAL HISTORIAL (KARDEX) */}
       {isHistoryModalOpen && viewingHistoryProduct && (
         <div className="fixed inset-0 bg-black/50 z-[80] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col">
@@ -2478,7 +2074,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {/* MODAL RECIBO */}
       {receiptDetails && (
         <div className="fixed inset-0 bg-black/60 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
             <div className="bg-white w-full max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
@@ -2505,7 +2100,6 @@ export default function PosApp() {
                         </div>
                     )}
 
-                    {/* --- HISTORIAL DE PAGOS (NUEVO) --- */}
                     {receiptDetails.type === 'sale' && receiptDetails.paymentSchedule && (
                         <div className="mb-6">
                             <h3 className="text-xs font-bold text-stone-400 uppercase mb-2 flex items-center gap-1"><DollarSign className="w-3 h-3"/> Historial de Pagos</h3>
@@ -2523,7 +2117,6 @@ export default function PosApp() {
                                             </div>
                                             {item.status === 'paid' && <CheckCircle2 className="w-4 h-4 text-emerald-500"/>}
                                         </div>
-                                        {/* Detalle de transacciones dentro de este item */}
                                         {item.paymentHistory && item.paymentHistory.length > 0 && (
                                             <div className="bg-white border-t border-stone-100 p-2 text-[10px] space-y-2">
                                                 {item.paymentHistory.map((hist, hIdx) => (
@@ -2576,13 +2169,12 @@ export default function PosApp() {
                             </div>
                         ))}
                     </div>
-                    {receiptDetails.saleStatus === 'pending' && (
+                    {receiptDetails.saleStatus === 'pending_delivery' && (
                         <button 
                             onClick={() => handleDeliverOrder(receiptDetails)} 
-                            className={`w-full mt-6 font-bold py-3 rounded-xl text-white ${getOrderStatus(receiptDetails) === 'ready' ? 'bg-green-600' : 'bg-stone-300 cursor-not-allowed'}`}
-                            disabled={getOrderStatus(receiptDetails) !== 'ready'}
+                            className="w-full mt-6 font-bold py-3 rounded-xl bg-blue-600 text-white"
                         >
-                            {getOrderStatus(receiptDetails) === 'ready' ? 'Entregar Ahora' : 'Falta Stock (Esperar)'}
+                            Entregar Ahora
                         </button>
                     )}
                 </div>
@@ -2621,12 +2213,11 @@ export default function PosApp() {
                   {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
               
-              {/* Input Precio Formateado en Productos */}
               <div className="relative">
                   <span className="absolute left-3 top-3 text-stone-400">$</span>
                   <MoneyInput 
                       className="w-full pl-7 p-3 border rounded-xl" 
-                      value={productPriceInput.replace(/\D/g,'')} // Limpiamos porque el input espera numero puro
+                      value={productPriceInput.replace(/\D/g,'')} 
                       onChange={val => setProductPriceInput(val)}
                       placeholder="Precio" 
                   />
@@ -2702,49 +2293,12 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- CONFIRMAR ENTREGA MODAL --- */}
-      {confirmDeliveryModal.show && confirmDeliveryModal.transaction && (
-        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl text-center">
-                <h3 className="text-lg font-bold mb-2 text-stone-800">Confirmar Entrega</h3>
-                <p className="text-sm text-stone-600 mb-4">
-                    {confirmDeliveryModal.transaction.courier} ya entregó el pedido. 
-                    <br/>Por favor, indica la fecha real de entrega:
-                </p>
-                <div className="mb-6">
-                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">Fecha Real</label>
-                    <input 
-                        type="date" 
-                        className="w-full p-3 border rounded-xl bg-stone-50 font-bold text-stone-800"
-                        value={deliveryDateInput}
-                        onChange={(e) => setDeliveryDateInput(e.target.value)}
-                    />
-                </div>
-                <div className="flex gap-3">
-                    <button 
-                        onClick={() => setConfirmDeliveryModal({ show: false, transaction: null })} 
-                        className="flex-1 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold"
-                    >
-                        Cancelar
-                    </button>
-                    <button 
-                        onClick={processDeliveryConfirmation} 
-                        className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold"
-                    >
-                        Confirmar
-                    </button>
-                </div>
-            </div>
-        </div>
-      )}
-
-      {/* Bottom Nav */}
       <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 pb-safe-bottom z-30 shadow-lg">
         <NavButton icon={<LayoutDashboard />} label="Reportes" active={view === 'reports'} onClick={() => setView('reports')} />
         <NavButton icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => setView('pos')} />
-        <NavButton icon={<ShoppingBag />} label="Pedidos" active={view === 'purchases'} onClick={() => setView('purchases')} />
-        <NavButton icon={<Receipt />} label="Ventas" active={view === 'receipts'} onClick={() => setView('receipts')} />
-        <NavButton icon={<DollarSign />} label="Finanzas" active={view === 'finances'} onClick={() => setView('finances')} />
+        <NavButton icon={<ShoppingBag />} label="Compras" active={view === 'purchases'} onClick={() => setView('purchases')} />
+        <NavButton icon={<Receipt />} label="Pedidos" active={view === 'receipts'} onClick={() => setView('receipts')} />
+        <NavButton icon={<DollarSign />} label="Deudores" active={view === 'finances'} onClick={() => setView('finances')} />
         <NavButton icon={<Users />} label="Clientes" active={view === 'clients'} onClick={() => setView('clients')} />
         <NavButton icon={<Package />} label="Stock" active={view === 'inventory'} onClick={() => setView('inventory')} />
       </nav>
