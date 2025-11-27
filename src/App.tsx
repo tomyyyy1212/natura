@@ -1223,6 +1223,58 @@ export default function PosApp() {
       }
   };
 
+  const setQuickDate = (type) => {
+      const now = new Date();
+      const formatDate = (d) => d.toLocaleDateString('en-CA');
+      let start = new Date();
+      let end = new Date();
+      if (type === 'today') { /* no op */ }
+      else if (type === 'yesterday') { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
+      else if (type === 'week') { start.setDate(start.getDate() - start.getDay() + (start.getDay() === 0 ? -6 : 1)); }
+      else if (type === 'month') { start.setDate(1); }
+      setReportStartDate(formatDate(start)); setReportEndDate(formatDate(end));
+  };
+
+  const reportData = useMemo(() => {
+    const start = new Date(`${reportStartDate}T00:00:00`);
+    const end = new Date(`${reportEndDate}T23:59:59.999`);
+    const reportTrans = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'completed' && t.date && t.date.seconds && new Date(t.date.seconds * 1000) >= start && new Date(t.date.seconds * 1000) <= end);
+    
+    const totalSales = reportTrans.reduce((acc, t) => acc + t.total, 0);
+    const totalCost = reportTrans.reduce((acc, t) => acc + (t.totalCost || 0), 0);
+    const margin = totalSales - totalCost;
+    
+    const productMap = new Map();
+    reportTrans.forEach(t => (t.items || []).forEach(i => {
+        const ex = productMap.get(i.id) || { name: i.name, qty: 0, revenue: 0 };
+        productMap.set(i.id, { ...ex, qty: ex.qty + i.qty, revenue: ex.revenue + (i.qty * i.transactionPrice) });
+    }));
+    const productRanking = Array.from(productMap.values()).sort((a,b) => b.revenue - a.revenue).slice(0, 5);
+
+    const clientMap = new Map();
+    reportTrans.forEach(t => {
+        const cname = getClientName(t.clientId);
+        const ex = clientMap.get(cname) || { name: cname, count: 0, total: 0 };
+        clientMap.set(cname, { ...ex, count: ex.count + 1, total: ex.total + t.total });
+    });
+    const clientRanking = Array.from(clientMap.values()).sort((a,b) => b.total - a.total).slice(0, 5);
+
+    const timeline = {};
+    reportTrans.forEach(t => {
+        if (t.date && t.date.seconds) {
+            const d = new Date(t.date.seconds * 1000);
+            const k = d.toISOString().split('T')[0]; 
+            timeline[k] = (timeline[k] || 0) + t.total;
+        }
+    });
+    const timelineData = Object.entries(timeline).sort((a,b) => a[0].localeCompare(b[0])).map(([k,v]) => {
+        const [y,m,d] = k.split('-');
+        return { date: `${d}/${m}`, total: v };
+    });
+
+    return { totalSales, totalCost, margin, marginPercent: totalSales > 0 ? (margin/totalSales)*100 : 0, productRanking, clientRanking, timelineData };
+  }, [transactions, reportStartDate, reportEndDate]);
+
   if (!user && loading) return <div className="flex h-screen items-center justify-center bg-stone-100 text-orange-600">Iniciando...</div>;
 
   return (
