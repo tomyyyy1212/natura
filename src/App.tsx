@@ -211,6 +211,7 @@ export default function PosApp() {
 
   const [paymentMethod, setPaymentMethod] = useState('Efectivo'); 
   const [editingTransactionId, setEditingTransactionId] = useState(null); 
+  const [originalBatchesMap, setOriginalBatchesMap] = useState({}); 
     
   const [loading, setLoading] = useState(true); 
   const [searchTerm, setSearchTerm] = useState('');
@@ -284,6 +285,41 @@ export default function PosApp() {
     return new Date().toLocaleDateString('en-CA'); 
   });
 
+  // --- LOGICA DE AUTODETECCIÓN DE STOCK ---
+  const stockAnalysis = useMemo(() => {
+    const available = [];
+    const missing = [];
+    let canDeliverAll = true;
+    cart.forEach(item => {
+        const prod = products.find(p => p.id === item.id);
+        const currentStock = prod ? prod.stock : 0;
+        if (currentStock >= item.qty) {
+            available.push(item);
+        } else {
+            missing.push({ ...item, currentStock });
+            canDeliverAll = false;
+        }
+    });
+    return { available, missing, canDeliverAll };
+  }, [cart, products]);
+
+  // --- ESTADO DERIVADO PARA DELIVERY TYPE ---
+  const [deliveryType, setDeliveryType] = useState('immediate'); // 'immediate' | 'order'
+
+  // Actualizar deliveryType cuando cambia el análisis de stock
+  useEffect(() => {
+    if (isCheckoutModalOpen) {
+        if (stockAnalysis.canDeliverAll) {
+            setDeliveryType('immediate');
+        } else {
+            setDeliveryType('order');
+        }
+        // Reset dates on open
+        setCheckoutData(prev => ({...prev, installmentDates: {}}));
+    }
+  }, [isCheckoutModalOpen, stockAnalysis.canDeliverAll]);
+
+  // Auth & Sync
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -349,31 +385,6 @@ export default function PosApp() {
   }, []);
 
   const triggerAlert = (title, message, type = 'error') => setAlertState({ show: true, title, message, type });
-
-  // --- LOGICA DE AUTODETECCIÓN DE STOCK ---
-  const stockAnalysis = useMemo(() => {
-    const available = [];
-    const missing = [];
-    let canDeliverAll = true;
-    cart.forEach(item => {
-        const prod = products.find(p => p.id === item.id);
-        const currentStock = prod ? prod.stock : 0;
-        if (currentStock >= item.qty) {
-            available.push(item);
-        } else {
-            missing.push({ ...item, currentStock });
-            canDeliverAll = false;
-        }
-    });
-    return { available, missing, canDeliverAll };
-  }, [cart, products]);
-
-  // Resetear fechas al abrir modal
-  useEffect(() => {
-    if (isCheckoutModalOpen) {
-        setCheckoutData(prev => ({...prev, installmentDates: {}}));
-    }
-  }, [isCheckoutModalOpen]);
 
   // --- CALCULO DE FECHAS DE PAGO (Manual para Cuotas) ---
   const calculatePaymentSchedule = (total, planType, data) => {
@@ -819,12 +830,13 @@ export default function PosApp() {
 
   const clearCart = () => { 
       setCart([]); setSelectedClient(''); setClientSearchTerm(''); setSelectedSupplier(''); 
-      setPaymentMethod(''); setEditingTransactionId(null); setMagazineFile(null); 
+      setPaymentMethod(''); setEditingTransactionId(null); 
       setOriginalBatchesMap({}); 
       setOrderSource(null);
       setCatalogBrand(''); 
       setSelectedCycle(''); 
       setInstallmentInfo({ isInstallments: false, count: 1 });
+      setDeliveryType('immediate');
       setPaymentPlanType('full');
       setCheckoutData({ installmentsCount: 3, installmentDates: {} });
   };
@@ -1417,38 +1429,6 @@ export default function PosApp() {
                         </div>
                     )
                 )}
-            </div>
-        )}
-        
-        {view === 'inventory' && (
-            <div className="p-4 overflow-y-auto pb-24">
-                <div className="flex justify-between mb-4 gap-2">
-                    <div className="flex-1 relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 rounded-xl border" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
-                    <button onClick={() => setIsCategoryModalOpen(true)} className="p-2 border rounded-xl"><Tag/></button>
-                    <button onClick={() => setShowCatalogModal(true)} className="p-2 bg-green-600 text-white rounded-xl"><Share2/></button>
-                    <button onClick={() => { setEditingProduct(null); setProductPriceInput(''); setIsProductModalOpen(true); }} className="px-4 bg-orange-500 text-white rounded-xl font-bold flex items-center gap-2"><Plus className="w-4 h-4"/> Nuevo</button>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                    {filteredProducts.map(p => (
-                        <div key={p.id} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all">
-                            <div className="aspect-square w-full relative">
-                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200 bg-stone-50" />}
-                            </div>
-                            <div className="p-2 flex flex-col flex-1 justify-between text-left">
-                                <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
-                                <div className="mt-2 flex justify-between items-end">
-                                    <span className="text-orange-600 font-bold">${formatMoney(p.price)}</span>
-                                    <span className={`text-[10px] px-2 py-0.5 rounded-lg font-bold ${getStockStatus(p.stock).color}`}>{p.stock}</span>
-                                </div>
-                                <div className="flex gap-2 mt-3 pt-2 border-t">
-                                    <button onClick={() => { setViewingHistoryProduct(p); setIsHistoryModalOpen(true); loadProductHistory(p.id); }} className="flex-1 py-1 bg-purple-50 text-purple-600 rounded flex justify-center"><ScrollText className="w-4 h-4"/></button>
-                                    <button onClick={() => { setEditingProduct(p); setProductPriceInput('$'+formatMoney(p.price)); setIsProductModalOpen(true); }} className="flex-1 py-1 bg-blue-50 text-blue-600 rounded flex justify-center"><Pencil className="w-4 h-4"/></button>
-                                    <button onClick={() => handleDeleteProduct(p.id)} className="flex-1 py-1 bg-red-50 text-red-600 rounded flex justify-center"><Trash2 className="w-4 h-4"/></button>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
             </div>
         )}
         
