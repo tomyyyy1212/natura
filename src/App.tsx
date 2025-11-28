@@ -66,11 +66,17 @@ import {
   Percent, 
   ChevronDown, 
   ExternalLink,
-  QrCode,
+  QrCode, 
   CreditCard as DebitCard,
   ToggleLeft,
   ToggleRight,
-  ClipboardList
+  ClipboardList,
+  Repeat,
+  Target,
+  ArrowRight,
+  StickyNote,
+  Globe2,
+  Lock
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -128,8 +134,7 @@ const generateShortId = () => {
 };
 
 // --- COMPONENTE INPUT DINERO EN VIVO ---
-const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
-    // Verifica si value es válido para mostrar, permitiendo 0
+const MoneyInput = ({ value, onChange, placeholder, className, autoFocus, disabled }) => {
     const isValid = value !== '' && value !== null && value !== undefined;
     const displayValue = isValid ? parseInt(value).toLocaleString('es-CL') : '';
     
@@ -148,6 +153,7 @@ const MoneyInput = ({ value, onChange, placeholder, className, autoFocus }) => {
             value={displayValue}
             onChange={handleChange}
             autoFocus={autoFocus}
+            disabled={disabled}
         />
     );
 };
@@ -176,13 +182,6 @@ export default function PosApp() {
       if (stock === 1) return { color: 'bg-red-100 text-red-700 border border-red-200', label: 'CRÍTICO' };
       if (stock > 1 && stock < 4) return { color: 'bg-orange-100 text-orange-800 border border-orange-200', label: 'BAJO' };
       return { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'BIEN' };
-  };
-
-  const getOrderStatus = (transaction) => {
-      if (!transaction) return 'unknown';
-      if (transaction.saleStatus === 'pending_order') return 'waiting';
-      if (transaction.saleStatus === 'pending_delivery') return 'ready';
-      return 'ready'; 
   };
     
   // Estados Principales
@@ -221,16 +220,17 @@ export default function PosApp() {
   const [searchTerm, setSearchTerm] = useState('');
   const [processingMsg, setProcessingMsg] = useState(''); 
 
+  // SALES MODE STATE
+  const [salesMode, setSalesMode] = useState(null); // 'stock', 'cycle', 'exchange'
+
   // Alertas y Confirmaciones
   const [alertState, setAlertState] = useState({ show: false, title: '', message: '', type: 'info' }); 
   const [confirmationState, setConfirmationState] = useState({ show: false, title: '', message: '', type: 'neutral', onConfirm: null });
   
-  // --- FUNCIÓN TRIGGER ALERT (MOVIDA ARRIBA PARA EVITAR ERRORES DE REFERENCIA) ---
   const triggerAlert = (title, message, type = 'error') => {
       setAlertState({ show: true, title, message, type });
   };
 
-  // NUEVO: Estado para confirmar fecha de entrega diferida
   const [confirmDeliveryModal, setConfirmDeliveryModal] = useState({ show: false, transaction: null });
   const [deliveryDateInput, setDeliveryDateInput] = useState(new Date().toISOString().split('T')[0]);
 
@@ -293,6 +293,11 @@ export default function PosApp() {
   const [reportEndDate, setReportEndDate] = useState(() => {
     return new Date().toLocaleDateString('en-CA'); 
   });
+
+  // --- HELPER: CYCLE MAP ---
+  const cycleMap = useMemo(() => {
+    return cycles.reduce((acc, c) => ({ ...acc, [c.id]: c.name }), {});
+  }, [cycles]);
 
   // --- LOGICA DE AUTODETECCIÓN DE STOCK ---
   const stockAnalysis = useMemo(() => {
@@ -373,7 +378,7 @@ export default function PosApp() {
     const unsubSuppliers = onSnapshot(collection(db, basePath, 'suppliers'), (s) => setSuppliers(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const qTrans = query(collection(db, basePath, 'transactions'), orderBy('date', 'desc'), limit(200));
     const unsubTrans = onSnapshot(qTrans, (s) => setTransactions(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const unsubCycles = onSnapshot(collection(db, basePath, 'cycles'), (s) => setCycles(s.docs.map(d => d.data().name)));
+    const unsubCycles = onSnapshot(collection(db, basePath, 'cycles'), (s) => setCycles(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubBatches = onSnapshot(collection(db, basePath, 'inventory_batches'), (s) => {
         const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
         setInventoryBatches(data);
@@ -425,11 +430,17 @@ export default function PosApp() {
       return schedule;
   };
 
-  // --- GUARDAR VENTA (SIN PAGO INICIAL) ---
+  // --- LOGIC FOR CYCLES ---
+  const activeCycle = useMemo(() => {
+      return cycles.find(c => c.status === 'open') || null;
+  }, [cycles]);
+
+  // --- GUARDAR VENTA (MODIFIED TO HANDLE SALES MODE) ---
   const handleConfirmCheckout = async () => {
     if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
     
     const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
+    const totalPoints = cart.reduce((acc, item) => acc + ((item.points || 0) * item.qty), 0);
     
     // Validar Fechas de Cuotas
     if (paymentPlanType === 'installments') {
@@ -443,7 +454,7 @@ export default function PosApp() {
     }
 
     setLoading(true);
-    setProcessingMsg("Registrando Pedido...");
+    setProcessingMsg("Registrando...");
 
     try {
         const batch = writeBatch(db);
@@ -451,23 +462,32 @@ export default function PosApp() {
         const displayId = generateShortId();
         const now = new Date();
 
-        // FIFO Logic (Solo si hay stock disponible se descuenta ahora)
+        // FIFO Logic (Solo si es venta inmediata de stock)
         let transactionFIFO = 0;
         let finalItems = [...cart];
-        let saleStatus = 'pending_order'; // Por defecto: Por Encargar
+        let saleStatus = 'pending_order'; // Por defecto
 
-        if (stockAnalysis.canDeliverAll) {
-             saleStatus = 'pending_delivery'; // Listo para entrega
-             for (let item of finalItems) {
-                 const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
-                 item.fifoTotalCost = totalCost; 
-                 item.fifoDetails = fifoDetails;
-                 transactionFIFO += totalCost;
-                 batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
-                 batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
-             }
+        // LOGIC BASED ON SALES MODE
+        if (salesMode === 'cycle') {
+            saleStatus = 'pending_cycle'; // Acumulado en ciclo
+        } else if (salesMode === 'exchange') {
+            saleStatus = 'pending_arrival'; // Waiting for the exchange item to arrive
         } else {
-            saleStatus = 'pending_order';
+            // STOCK / WEB MODE
+            if (stockAnalysis.canDeliverAll) {
+                 saleStatus = 'pending_delivery'; 
+                 for (let item of finalItems) {
+                     const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
+                     item.fifoTotalCost = totalCost; 
+                     item.fifoDetails = fifoDetails;
+                     transactionFIFO += totalCost;
+                     batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
+                     batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
+                 }
+            } else {
+                // NO HAY STOCK EN VENTA STOCK -> ES PEDIDO WEB
+                saleStatus = 'pending_web';
+            }
         }
 
         const margin = total - transactionFIFO;
@@ -479,18 +499,20 @@ export default function PosApp() {
             type: 'sale',
             items: finalItems,
             total: total,
+            totalPoints: totalPoints, // Save points
             clientId: selectedClient,
             date: { seconds: now.getTime() / 1000 },
             paymentPlanType, 
             paymentSchedule, 
-            balance: total, // Siempre debe el total al inicio
-            paymentStatus: 'pending', // Siempre pendiente
-            paymentMethod: null, // No hubo pago en caja
+            balance: total, 
+            paymentStatus: 'pending', 
+            paymentMethod: null, 
             totalCost: transactionFIFO,
             margin: margin,
             marginPercent: (total > 0) ? (margin/total)*100 : 0,
             saleStatus: saleStatus, 
-            origin: 'POS',
+            origin: salesMode === 'cycle' ? 'cycle' : (salesMode === 'exchange' ? 'exchange' : 'POS'),
+            cycleId: salesMode === 'cycle' && activeCycle ? activeCycle.id : null, // Link to cycle if applicable
             courier: null,
             deliveredAt: null,
             finalizedAt: null 
@@ -502,8 +524,14 @@ export default function PosApp() {
         clearCart();
         setIsCheckoutModalOpen(false);
         setCheckoutData({ installmentsCount: 3, installmentDates: {}, downPayment: '' }); 
+        setSalesMode(null); // Reset mode
 
-        triggerAlert("Éxito", `Pedido ${displayId} registrado en Deudores.`, "success");
+        let successMsg = "Venta registrada.";
+        if (salesMode === 'cycle') successMsg = `Agregado al Ciclo ${activeCycle?.name}.`;
+        if (salesMode === 'exchange') successMsg = "Intercambio registrado por llegar.";
+        if (saleStatus === 'pending_web') successMsg = "Falta stock: Registrado como Pedido Web.";
+
+        triggerAlert("Éxito", successMsg, "success");
 
     } catch (error) {
         console.error(error);
@@ -728,7 +756,7 @@ export default function PosApp() {
           let finalTotalCost = deliveryTransaction.totalCost;
           const updatedItems = [];
           
-          if (deliveryTransaction.saleStatus === 'pending_order') {
+          if (deliveryTransaction.saleStatus === 'pending_order' || deliveryTransaction.saleStatus === 'pending_arrival' || deliveryTransaction.saleStatus === 'pending_web') {
               finalTotalCost = 0; // Recalculamos costo FIFO porque recién sale
               for (const item of (deliveryTransaction.items || [])) {
                    const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
@@ -808,9 +836,22 @@ export default function PosApp() {
     setCart(prev => {
       const existing = prev.find(p => p.id === product.id);
       if (existing) return prev.map(p => p.id === product.id ? { ...p, qty: p.qty + 1 } : p);
-      return [...prev, { ...product, transactionPrice: view === 'purchases' ? 0 : product.price, qty: 1, expirationDate: '' }];
+      // Ensure points are passed to cart item, init isMagazinePrice false
+      return [...prev, { ...product, transactionPrice: view === 'purchases' ? 0 : product.price, qty: 1, expirationDate: '', points: product.points || 0, isMagazinePrice: false, originalPrice: product.price }];
     });
   };
+
+  const toggleMagazinePrice = (id) => setCart(prev => prev.map(p => {
+      if(p.id === id) {
+          const newIsMagazine = !p.isMagazinePrice;
+          return {
+              ...p,
+              isMagazinePrice: newIsMagazine,
+              transactionPrice: newIsMagazine ? 0 : p.originalPrice // Reset to 0 if switching to magazine so user types it, or keep old? Better 0 to force entry
+          };
+      }
+      return p;
+  }));
 
   const removeFromCart = (id) => setCart(prev => prev.filter(p => p.id !== id));
   const updateQty = (id, d) => setCart(prev => prev.map(p => {
@@ -837,13 +878,11 @@ export default function PosApp() {
       setCheckoutData({ installmentsCount: 3, installmentDates: {} });
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
+  const cartPoints = useMemo(() => cart.reduce((acc, item) => acc + ((item.points || 0) * item.qty), 0), [cart]);
 
   const handleCreateOrder = async () => {
     if (cart.length === 0) { triggerAlert("Vacío", "Agrega productos.", "info"); return; }
-    if (!selectedSupplier) { triggerAlert("Falta Origen", "Selecciona si es Web o Catálogo.", "info"); return; }
     
-    if (cart.some(i => i.transactionPrice <= 0)) { triggerAlert("Costo 0", "Ingresa costos válidos.", "error"); return; }
-
     setLoading(true);
     setProcessingMsg('Creando Pedido...');
 
@@ -858,17 +897,18 @@ export default function PosApp() {
             type: 'order', 
             items: [...cart],
             total: cartTotal,
-            clientId: selectedSupplier, 
+            totalPoints: cartPoints, 
+            clientId: selectedSupplier || 'Stock Personal', 
             date: { seconds: now.getTime() / 1000 },
             saleStatus: 'pending_arrival', 
             installments: installmentInfo.isInstallments ? installmentInfo.count : 1,
-            orderType: orderSource, 
-            cycle: selectedCycle || null 
+            orderType: orderSource || 'cycle_order', 
+            cycleId: selectedCycle || null 
         });
 
         clearCart();
         setOrderSource(null);
-        triggerAlert("Pedido Creado", "Registrado en 'Por Llegar'.", "success");
+        triggerAlert("Pedido Creado", "Agregado al Ciclo actual.", "success");
 
     } catch (error) {
         console.error(error);
@@ -907,6 +947,8 @@ export default function PosApp() {
       try {
           const batch = writeBatch(db);
           
+          const isInvestment = checkInOrder.clientId === 'Para Inversión';
+
           checkInItems.forEach(item => {
               const batchRef = doc(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`));
               batch.set(batchRef, {
@@ -925,7 +967,7 @@ export default function PosApp() {
 
           const transRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, checkInOrder.id);
           batch.update(transRef, {
-              type: 'purchase', 
+              type: isInvestment ? 'stock_entry' : 'purchase', // Mark as stock_entry if investment to hide from sales/receipts
               saleStatus: 'completed',
               checkInDate: { seconds: Date.now() / 1000 }
           });
@@ -1048,7 +1090,6 @@ export default function PosApp() {
     const fd = new FormData(e.currentTarget);
     const imageFile = fd.get('image');
     
-    // FIX: Usar state en vez de fd.get('price') para evitar error de replace en null
     const price = Number(productPriceInput) || 0;
 
     if (!editingProduct && (!imageFile || imageFile.size === 0)) {
@@ -1071,7 +1112,9 @@ export default function PosApp() {
             price, 
             category: fd.get('category'), 
             stock: editingProduct ? editingProduct.stock : 0, 
-            imageUrl 
+            imageUrl,
+            customId: fd.get('customId') || '',
+            points: Number(fd.get('points')) || 0
         };
         if (editingProduct) await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/products`, editingProduct.id), data);
         else await addDoc(collection(db, `artifacts/${APP_ID}/public/data/products`), data);
@@ -1160,16 +1203,24 @@ export default function PosApp() {
           completed: all.filter(t => t.saleStatus === 'completed'),
           pending_delivery: all.filter(t => t.saleStatus === 'pending_delivery'),
           pending_order: all.filter(t => t.saleStatus === 'pending_order'),
-          inTransit: all.filter(t => t.saleStatus === 'in_transit') 
+          inTransit: all.filter(t => t.saleStatus === 'in_transit'),
+          pending_cycle: all.filter(t => t.saleStatus === 'pending_cycle'),
+          pending_arrival: all.filter(t => t.saleStatus === 'pending_arrival'),
+          pending_web: all.filter(t => t.saleStatus === 'pending_web'),
       };
   }, [transactions]);
 
   const filteredOrders = useMemo(() => {
-      return transactions.filter(t => (t.type === 'order' && t.saleStatus === 'pending_arrival') || t.type === 'purchase');
+      return transactions.filter(t => (t.type === 'order' && t.saleStatus === 'pending_arrival') || (t.type === 'purchase' || t.type === 'stock_entry'));
   }, [transactions]);
 
-  const pendingArrivals = filteredOrders.filter(t => t.saleStatus === 'pending_arrival');
-  const purchaseHistoryData = filteredOrders.filter(t => t.type === 'purchase');
+  const pendingArrivals = useMemo(() => {
+      const stockOrders = filteredOrders.filter(t => t.saleStatus === 'pending_arrival');
+      const clientOrders = filteredSales.pending_arrival;
+      return [...stockOrders, ...clientOrders].sort((a,b) => a.date.seconds - b.date.seconds);
+  }, [filteredOrders, filteredSales]);
+
+  const purchaseHistoryData = filteredOrders.filter(t => t.type === 'purchase' || t.type === 'stock_entry');
 
   const getClientName = (id) => {
       if (!id) return 'Consumidor Final';
@@ -1213,6 +1264,115 @@ export default function PosApp() {
       return pendingMap;
   }, [transactions, products]);
 
+  // --- LOGIC FOR CYCLES VIEW ---
+  
+  const activeCycleStats = useMemo(() => {
+      const activeCycle = cycles.find(c => c.status === 'open') || null;
+      if (!activeCycle) return { totalPoints: 0, clientPoints: 0, stockPoints: 0, progress: 0, orders: [], remainingDays: 0 };
+      
+      const ordersInCycle = transactions.filter(t => 
+          (t.type === 'order' || t.type === 'sale') && 
+          t.cycleId === activeCycle.id
+      );
+      
+      let clientPoints = 0;
+      let stockPoints = 0;
+      
+      ordersInCycle.forEach(o => {
+          if (o.type === 'order' && o.clientId === 'Para Inversión') {
+              stockPoints += (o.totalPoints || 0);
+          } else {
+              clientPoints += (o.totalPoints || 0);
+          }
+      });
+      
+      const totalPoints = clientPoints + stockPoints;
+      const progress = activeCycle.goal > 0 ? (totalPoints / activeCycle.goal) * 100 : 0;
+      
+      const diffTime = new Date(activeCycle.closingDate) - new Date();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+
+      return { totalPoints, clientPoints, stockPoints, progress, orders: ordersInCycle, remainingDays: diffDays };
+  }, [cycles, transactions]);
+
+  const handleSaveCycle = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.currentTarget);
+      const name = fd.get('name');
+      const goal = Number(fd.get('goal'));
+      const closingDate = fd.get('closingDate');
+      
+      try {
+          const activeCycle = cycles.find(c => c.status === 'open');
+          if(activeCycle) {
+              triggerAlert("Ya existe un ciclo abierto", "Cierra el ciclo actual antes de crear uno nuevo.", "error");
+              return;
+          }
+          await addDoc(collection(db, `artifacts/${APP_ID}/public/data/cycles`), {
+              name,
+              goal,
+              closingDate,
+              status: 'open',
+              startDate: new Date().toISOString()
+          });
+          setIsCycleModalOpen(false);
+          triggerAlert("Ciclo Iniciado", `Meta: ${goal} puntos.`, "success");
+      } catch(e) {
+          console.error(e);
+          triggerAlert("Error", "No se pudo crear el ciclo.", "error");
+      }
+  };
+
+  const handleCloseCycle = async () => {
+      const activeCycle = cycles.find(c => c.status === 'open');
+      if(!activeCycle) return;
+      
+      if(activeCycleStats.totalPoints < activeCycle.goal) {
+          triggerAlert("Meta No Alcanzada", "No puedes cerrar el pedido si no has llegado al límite de puntos.", "error");
+          return;
+      }
+
+      setConfirmationState({
+          show: true,
+          title: "Cerrar Ciclo",
+          message: `¿Estás seguro de cerrar el ciclo "${activeCycle.name}"?\n\nTodos los pedidos pendientes pasarán a estado "Por Llegar".`,
+          type: "neutral",
+          onConfirm: async () => {
+              setConfirmationState(prev => ({ ...prev, show: false }));
+              setLoading(true);
+              setProcessingMsg("Generando pedidos...");
+              
+              try {
+                  const batch = writeBatch(db);
+                  const cycleOrders = activeCycleStats.orders;
+                  
+                  // Update all cycle orders to pending_arrival
+                  cycleOrders.forEach(order => {
+                      batch.update(doc(db, `artifacts/${APP_ID}/public/data/transactions`, order.id), {
+                          saleStatus: 'pending_arrival',
+                          orderedAt: new Date().toISOString()
+                      });
+                  });
+                  
+                  // Close cycle
+                  batch.update(doc(db, `artifacts/${APP_ID}/public/data/cycles`, activeCycle.id), {
+                      status: 'closed',
+                      closedAt: new Date().toISOString()
+                  });
+                  
+                  await batch.commit();
+                  triggerAlert("Ciclo Cerrado", "Los pedidos se han generado correctamente.", "success");
+              } catch(e) {
+                  console.error(e);
+                  triggerAlert("Error", "Falló al cerrar ciclo", "error");
+              } finally {
+                  setLoading(false);
+                  setProcessingMsg("");
+              }
+          }
+      });
+  };
+
   const getAlertConfig = (type) => {
     switch(type) {
         case 'success': return { border: 'border-green-500', icon: CheckCircle2, color: 'text-green-600' };
@@ -1224,6 +1384,7 @@ export default function PosApp() {
   const getHeaderTitle = () => {
       switch(view) {
           case 'pos': return 'Registra Venta';
+          case 'cycles': return 'Gestión Ciclos';
           case 'purchases': return 'Compras'; 
           case 'receipts': return 'Pedidos'; 
           case 'inventory': return 'Inventario';
@@ -1336,7 +1497,62 @@ export default function PosApp() {
         
         {(view === 'pos') && (
             <div className="flex flex-col h-full relative">
+                {/* SALES MODE SELECTOR OVERLAY */}
+                {salesMode === null && (
+                    <div className="absolute inset-0 z-20 bg-stone-50 flex flex-col p-6 animate-in fade-in duration-300">
+                        <div className="mb-8 text-center">
+                            <h2 className="text-2xl font-black text-stone-800 mb-2">Nueva Venta</h2>
+                            <p className="text-stone-500">¿Qué tipo de transacción deseas realizar?</p>
+                        </div>
+                        
+                        <div className="flex flex-col gap-4 max-w-md w-full mx-auto">
+                            <button onClick={() => setSalesMode('stock')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-transparent hover:border-orange-500 flex items-center gap-4 group transition-all">
+                                <div className="p-3 bg-orange-100 text-orange-600 rounded-xl group-hover:bg-orange-600 group-hover:text-white transition-colors">
+                                    <ShoppingBag className="w-8 h-8"/>
+                                </div>
+                                <div className="text-left">
+                                    <h3 className="font-bold text-lg text-stone-800">Venta Stock / Web</h3>
+                                    <p className="text-xs text-stone-400">Venta inmediata de productos existentes o compra web directa.</p>
+                                </div>
+                            </button>
+
+                            <button onClick={() => {
+                                const activeCycle = cycles.find(c => c.status === 'open');
+                                if(!activeCycle) { triggerAlert("Sin Ciclo", "No hay ciclo activo para agregar pedidos.", "info"); return; }
+                                setSalesMode('cycle');
+                            }} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 flex items-center gap-4 group transition-all">
+                                <div className="p-3 bg-blue-100 text-blue-600 rounded-xl group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                    <Repeat className="w-8 h-8"/>
+                                </div>
+                                <div className="text-left">
+                                    <h3 className="font-bold text-lg text-stone-800">Agregar al Ciclo</h3>
+                                    <p className="text-xs text-stone-400">Sumar puntos a la meta del ciclo actual (Encargo).</p>
+                                </div>
+                            </button>
+
+                            <button onClick={() => setSalesMode('exchange')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-transparent hover:border-purple-500 flex items-center gap-4 group transition-all">
+                                <div className="p-3 bg-purple-100 text-purple-600 rounded-xl group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                                    <ArrowRight className="w-8 h-8"/>
+                                </div>
+                                <div className="text-left">
+                                    <h3 className="font-bold text-lg text-stone-800">Intercambio</h3>
+                                    <p className="text-xs text-stone-400">Productos conseguidos con otras consultoras.</p>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 <div className="p-2 bg-white border-b shadow-sm space-y-2">
+                    {salesMode && (
+                        <div className={`px-3 py-2 rounded-lg text-sm font-bold flex justify-between items-center ${salesMode === 'cycle' ? 'bg-blue-50 text-blue-700' : salesMode === 'exchange' ? 'bg-purple-50 text-purple-700' : 'bg-orange-50 text-orange-700'}`}>
+                            <span className="flex items-center gap-2">
+                                {salesMode === 'cycle' ? <Repeat className="w-4 h-4"/> : salesMode === 'exchange' ? <ArrowRight className="w-4 h-4"/> : <ShoppingBag className="w-4 h-4"/>}
+                                Modo: {salesMode === 'cycle' ? `Ciclo ${cycles.find(c => c.status === 'open')?.name || '...'}` : salesMode === 'exchange' ? 'Intercambio' : 'Venta Stock'}
+                            </span>
+                            <button onClick={() => { setSalesMode(null); clearCart(); }} className="text-xs underline opacity-80">Cambiar</button>
+                        </div>
+                    )}
                     <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
                     <div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div>
                 </div>
@@ -1364,18 +1580,47 @@ export default function PosApp() {
                         <div className="rounded-t-3xl border-t p-4 bg-white">
                             <div className="max-h-48 overflow-y-auto mb-2 space-y-2">
                                 {cart.map(item => (
-                                    <div key={item.id} className="flex justify-between items-center border-b pb-2">
-                                            <div className="flex-1">
-                                                <div className="text-sm font-bold line-clamp-1">{item.name}</div>
-                                                <div className="text-xs text-stone-500">${formatMoney(item.price)} x {item.qty}</div>
-                                            </div>
-                                            <div className="flex items-center gap-3">
-                                                <div className="flex items-center bg-stone-100 rounded-lg">
-                                                    <button onClick={() => updateQty(item.id, -1)} className="px-2 py-1"><Minus className="w-3 h-3"/></button>
-                                                    <span className="text-sm font-bold w-6 text-center">{item.qty}</span>
-                                                    <button onClick={() => updateQty(item.id, 1)} className="px-2 py-1"><Plus className="w-3 h-3"/></button>
+                                    <div key={item.id} className="border-b pb-3 last:border-0">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <div className="flex-1">
+                                                    <div className="text-sm font-bold line-clamp-1 text-stone-800">{item.name}</div>
+                                                    <div className="text-xs text-stone-500">${formatMoney(item.transactionPrice)} x {item.qty}</div>
                                                 </div>
-                                                <button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-4 h-4"/></button>
+                                                <button onClick={() => removeFromCart(item.id)} className="text-red-400 p-1"><X className="w-4 h-4"/></button>
+                                            </div>
+                                            
+                                            <div className="flex items-center justify-between gap-2">
+                                                <div className="flex items-center bg-stone-100 rounded-lg h-8">
+                                                    <button onClick={() => updateQty(item.id, -1)} className="px-2 h-full flex items-center"><Minus className="w-3 h-3"/></button>
+                                                    <span className="text-sm font-bold w-8 text-center">{item.qty}</span>
+                                                    <button onClick={() => updateQty(item.id, 1)} className="px-2 h-full flex items-center"><Plus className="w-3 h-3"/></button>
+                                                </div>
+                                                
+                                                <div className="flex-1 flex flex-col items-end gap-1">
+                                                    {/* TOGGLE FOR MAGAZINE PRICE (STOCK & CYCLE) */}
+                                                    <div className="flex bg-stone-100 p-0.5 rounded-lg">
+                                                        <button 
+                                                            onClick={() => toggleMagazinePrice(item.id)} 
+                                                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all ${!item.isMagazinePrice ? 'bg-white shadow text-stone-800' : 'text-stone-400'}`}
+                                                        >
+                                                            Actual
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => toggleMagazinePrice(item.id)}
+                                                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all ${item.isMagazinePrice ? 'bg-white shadow text-blue-600' : 'text-stone-400'}`}
+                                                        >
+                                                            Revista
+                                                        </button>
+                                                    </div>
+                                                    
+                                                    <MoneyInput 
+                                                        className={`w-24 border-b text-sm font-bold text-right outline-none bg-transparent ${item.isMagazinePrice ? 'border-blue-300 text-blue-600' : 'border-stone-300 text-stone-800'}`} 
+                                                        value={item.transactionPrice === 0 ? '' : item.transactionPrice} 
+                                                        placeholder="Precio" 
+                                                        onChange={val => updateTransactionPrice(item.id, val || 0)}
+                                                        disabled={!item.isMagazinePrice} 
+                                                    />
+                                                </div>
                                             </div>
                                     </div>
                                 ))}
@@ -1387,6 +1632,131 @@ export default function PosApp() {
                         </div>
                     </div>
                 )}
+            </div>
+        )}
+
+        {/* --- NUEVA VISTA DE CICLOS --- */}
+        {view === 'cycles' && (
+            <div className="p-4 overflow-y-auto pb-24 h-full bg-stone-50">
+                {(() => {
+                    const activeCycle = cycles.find(c => c.status === 'open');
+                    if (!activeCycle) {
+                        return (
+                            <div className="flex flex-col items-center justify-center h-full text-center p-6">
+                                <div className="bg-white p-8 rounded-3xl shadow-xl max-w-sm w-full">
+                                    <Target className="w-16 h-16 text-orange-500 mx-auto mb-4"/>
+                                    <h2 className="text-2xl font-black text-stone-800 mb-2">Sin Ciclo Activo</h2>
+                                    <p className="text-stone-500 mb-6">Inicia un nuevo ciclo de ventas para comenzar a acumular puntos y pedidos.</p>
+                                    <button onClick={() => setIsCycleModalOpen(true)} className="w-full py-4 bg-stone-900 text-white rounded-2xl font-bold text-lg shadow-lg">Iniciar Nuevo Ciclo</button>
+                                </div>
+                            </div>
+                        );
+                    }
+                    return (
+                    <div className="space-y-6">
+                        {/* Dashboard del Ciclo */}
+                        <div className="bg-white rounded-3xl p-6 shadow-sm border border-stone-100">
+                            <div className="flex justify-between items-center mb-4">
+                                <div>
+                                    <div className="text-xs font-bold text-stone-400 uppercase tracking-widest">Ciclo Actual</div>
+                                    <h2 className="text-3xl font-black text-stone-800">{activeCycle.name}</h2>
+                                    <div className="text-xs text-orange-600 font-bold mt-1 flex items-center gap-1">
+                                        <Clock className="w-3 h-3"/> Cierra en {activeCycleStats.remainingDays} días
+                                    </div>
+                                </div>
+                                <div className="text-right">
+                                    <div className="text-xs font-bold text-stone-400 uppercase">Meta</div>
+                                    <div className="text-xl font-bold text-stone-800">{activeCycle.goal} pts</div>
+                                </div>
+                            </div>
+
+                            {/* Barra de Progreso */}
+                            <div className="mb-2">
+                                <div className="flex justify-between text-sm font-bold mb-1">
+                                    <span className="text-orange-600">{activeCycleStats.totalPoints} pts</span>
+                                    <span className="text-stone-400">{Math.round(activeCycleStats.progress)}%</span>
+                                </div>
+                                <div className="h-4 bg-stone-100 rounded-full overflow-hidden">
+                                    <div className="h-full bg-gradient-to-r from-orange-400 to-orange-600 transition-all duration-1000" style={{ width: `${Math.min(activeCycleStats.progress, 100)}%` }}></div>
+                                </div>
+                            </div>
+                            
+                            <div className="text-center mt-2 text-xs font-medium text-stone-500">
+                                {activeCycleStats.totalPoints >= activeCycle.goal 
+                                    ? <span className="text-green-600 font-bold flex items-center justify-center gap-1"><CheckCircle2 className="w-3 h-3"/> ¡Meta Alcanzada!</span> 
+                                    : `Faltan ${activeCycle.goal - activeCycleStats.totalPoints} puntos para el pedido.`
+                                }
+                            </div>
+
+                            <button 
+                                onClick={() => {
+                                    clearCart();
+                                    setSelectedCycle(activeCycle.id);
+                                    setSelectedSupplier('Para Inversión'); // Use correct client for investment
+                                    setOrderSource('cycle_stock'); // Mark as coming from cycle
+                                    setView('purchases'); // Go to purchases
+                                }}
+                                className="w-full mt-6 py-3 bg-purple-600 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                            >
+                                <Plus className="w-5 h-5"/>
+                                Agregar productos para inversión
+                            </button>
+                        </div>
+
+                        {/* Lista de Pedidos en Ciclo - Restaurada a estilo moderno */}
+                        <div>
+                            <div className="flex justify-between items-center mb-4 ml-1">
+                                <h3 className="font-bold text-stone-700 text-lg">Detalle del Ciclo</h3>
+                                {activeCycleStats.totalPoints < activeCycle.goal ? (
+                                    <div className="text-xs bg-stone-200 text-stone-500 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1">
+                                        <Lock className="w-3 h-3"/> Faltan puntos
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={handleCloseCycle}
+                                        disabled={activeCycleStats.orders.length === 0}
+                                        className="text-xs bg-stone-800 text-white px-3 py-1.5 rounded-lg font-bold shadow-md disabled:opacity-50 disabled:shadow-none hover:bg-stone-900 transition-colors"
+                                    >
+                                        Cerrar y Generar Pedidos
+                                    </button>
+                                )}
+                            </div>
+                            
+                            {activeCycleStats.orders.length === 0 ? (
+                                <div className="text-center py-12 text-stone-400 bg-stone-50 rounded-3xl border-2 border-dashed border-stone-200">
+                                    <Package className="w-12 h-12 mx-auto mb-3 text-stone-300"/>
+                                    <p>Aún no hay pedidos en este ciclo.</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {activeCycleStats.orders.map(order => (
+                                        <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-stone-100 flex justify-between items-center group hover:shadow-md transition-all">
+                                            <div className="flex items-center gap-3">
+                                                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg ${order.clientId === 'Para Inversión' ? 'bg-purple-100 text-purple-600' : 'bg-blue-100 text-blue-600'}`}>
+                                                    {order.clientId === 'Para Inversión' ? <Package className="w-5 h-5"/> : getClientName(order.clientId).charAt(0)}
+                                                </div>
+                                                <div>
+                                                    <div className="font-bold text-stone-800">{getClientName(order.clientId)}</div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${order.clientId === 'Para Inversión' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
+                                                            {order.clientId === 'Para Inversión' ? 'EN STOCK' : 'POR ENCARGAR'}
+                                                        </span>
+                                                        <span className="text-xs text-stone-400">• {order.items.length} prod.</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="font-bold text-stone-800">${formatMoney(order.total)}</div>
+                                                <div className="text-xs text-orange-600 font-bold">{order.totalPoints} pts</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    );
+                })()}
             </div>
         )}
 
@@ -1460,19 +1830,46 @@ export default function PosApp() {
                             <div className="grid grid-cols-2 gap-4"><button onClick={() => setOrderSource('selection')} className="col-span-2 bg-stone-800 text-white p-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"><Plus className="w-6 h-6"/> <span className="font-bold text-lg">Nuevo Pedido</span></button></div>
                             <div>
                                 <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-500"/> Por Llegar</h3>
-                                <div className="space-y-3">{pendingArrivals.length === 0 && <div className="text-center text-sm text-stone-400 py-4 border-2 border-dashed rounded-xl">No hay pedidos pendientes</div>}{pendingArrivals.map(order => (<div key={order.id} onClick={() => startCheckIn(order)} className="bg-white border border-l-4 border-l-amber-500 p-4 rounded-xl shadow-sm cursor-pointer hover:bg-amber-50 transition-colors relative"><div className="absolute top-3 right-3 bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-1 rounded uppercase">{order.clientId}</div><div className="font-bold text-lg mb-1">${formatMoney(order.total)}</div><div className="text-xs text-stone-500 flex gap-3"><span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {formatDateSimple(order.date.seconds)}</span><span className="flex items-center gap-1"><Box className="w-3 h-3"/> {(order.items || []).length} prod.</span></div></div>))}</div>
+                                <div className="space-y-3">{pendingArrivals.length === 0 && <div className="text-center text-sm text-stone-400 py-4 border-2 border-dashed rounded-xl">No hay pedidos pendientes</div>}{pendingArrivals.map(order => (<div key={order.id} onClick={() => startCheckIn(order)} className="bg-white border border-l-4 border-l-amber-500 p-4 rounded-xl shadow-sm cursor-pointer hover:bg-amber-50 transition-colors relative overflow-hidden">
+                                            {/* ETIQUETAS INTELIGENTES DE ORIGEN */}
+                                            {order.orderType === 'web' && (
+                                                <div className="absolute right-0 top-0 bg-blue-100 text-blue-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase">Compra Web #{order.displayId}</div>
+                                            )}
+                                            {(order.orderType === 'cycle_order' || order.orderType === 'cycle_stock') && order.cycleId && (
+                                                <div className="absolute right-0 top-0 bg-orange-100 text-orange-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase">
+                                                    {cycleMap[order.cycleId] ? `Ciclo ${cycleMap[order.cycleId]}` : 'Ciclo'}
+                                                </div>
+                                            )}
+
+                                            <div className="absolute top-6 right-3 text-[10px] font-bold text-stone-400 uppercase">{order.clientId === 'Para Inversión' ? 'Inversión' : order.clientId}</div>
+                                            
+                                            <div className="font-bold text-lg mb-1 pt-2">${formatMoney(order.total)}</div>
+                                            <div className="text-xs text-stone-500 flex gap-3"><span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {formatDateSimple(order.date.seconds)}</span><span className="flex items-center gap-1"><Box className="w-3 h-3"/> {(order.items || []).length} prod.</span></div>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                             <div><h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Compras</h3><div className="space-y-2">{purchaseHistoryData.slice(0, 10).map(h => (<div key={h.id} className="bg-stone-50 p-3 rounded-xl flex justify-between items-center opacity-70 cursor-pointer" onClick={() => setReceiptDetails(h)}><div><div className="font-bold text-stone-700">${formatMoney(h.total)}</div><div className="text-[10px] text-stone-400">{formatDateSimple(h.date.seconds)} • {h.clientId}</div></div><div className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold">RECIBIDO</div></div>))}</div></div>
                         </div>
                     ) : (
                         <div className="flex flex-col h-full bg-stone-50">
                             {orderSource === 'selection' && (<div className="p-6 flex flex-col h-full"><div className="mb-6"><h2 className="text-2xl font-bold text-stone-800">¿Origen del Pedido?</h2></div><div className="grid grid-cols-1 gap-4 flex-1 content-start"><button onClick={() => setOrderSource('web')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 text-left group"><h3 className="font-bold text-lg">Compra Web</h3></button><button onClick={() => setOrderSource('catalog')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-pink-500 text-left group"><h3 className="font-bold text-lg">Catálogo</h3></button></div><button onClick={() => setOrderSource(null)} className="py-3 text-stone-400 font-bold">Cancelar</button></div>)}
-                            {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (<div className="p-6 flex flex-col h-full"><h2 className="text-2xl font-bold mb-6">Detalles</h2>{orderSource === 'web' ? (<div className="space-y-3">{WEB_SUPPLIERS.map(s => <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border rounded-xl font-bold text-left hover:bg-stone-50">{s}</button>)}</div>) : (<div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">{!catalogBrand ? (<div><label className="block font-bold text-sm mb-3">Marca</label><div className="grid grid-cols-2 gap-3">{BRANDS.map(b => <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>)}</div></div>) : (<><div><label className="block font-bold text-sm mb-2">Campaña</label><div className="flex gap-2"><select className="flex-1 p-3 border rounded-xl bg-stone-50" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}><option value="">Seleccionar...</option>{cycles.map(c => <option key={c} value={c}>{c}</option>)}</select><button onClick={() => setIsCycleModalOpen(true)} className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center"><Plus/></button></div></div><button onClick={() => {if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona ciclo.", "info"); return; } setSelectedSupplier(`${catalogBrand} Catálogo`);}} className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl">Continuar</button></>)}</div>)}<button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button></div>)}
-                            {selectedSupplier && (
+                            {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (<div className="p-6 flex flex-col h-full"><h2 className="text-2xl font-bold mb-6">Detalles</h2>{orderSource === 'web' ? (<div className="space-y-3">{WEB_SUPPLIERS.map(s => <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border rounded-xl font-bold text-left hover:bg-stone-50">{s}</button>)}</div>) : (<div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">{!catalogBrand ? (<div><label className="block font-bold text-sm mb-3">Marca</label><div className="grid grid-cols-2 gap-3">{BRANDS.map(b => <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>)}</div></div>) : (<><div><label className="block font-bold text-sm mb-2">Campaña</label><div className="flex gap-2"><select className="flex-1 p-3 border rounded-xl bg-stone-50" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}><option value="">Seleccionar...</option>{cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><button onClick={() => setIsCycleModalOpen(true)} className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center"><Plus/></button></div></div><button onClick={() => {if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona ciclo.", "info"); return; } setSelectedSupplier(`${catalogBrand} Catálogo`);}} className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl">Continuar</button></>)}</div>)}<button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button></div>)}
+                            
+                            {/* VISTA DE PRODUCTOS AL COMPRAR/AGREGAR AL CICLO */}
+                            {(selectedSupplier || orderSource === 'cycle_stock') && (
                                 <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
-                                    <div className="p-2 bg-white border-b relative space-y-2"><div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div><div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div></div>
+                                    <div className="p-2 bg-white border-b relative space-y-2">
+                                        {/* Header especial si venimos de Ciclos */}
+                                        {(orderSource === 'cycle_stock') && (
+                                            <div className="bg-purple-50 border border-purple-100 text-purple-800 px-3 py-2 rounded-lg text-sm font-bold flex justify-between items-center">
+                                                <span>Agregando a {activeCycle?.name || 'Ciclo'} (Inversión)</span>
+                                                <button onClick={() => { clearCart(); setView('cycles'); }} className="text-xs underline">Cancelar</button>
+                                            </div>
+                                        )}
+                                        <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div><div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div></div>
                                     <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48"><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{filteredProducts.map(p => (<button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full"><div className="aspect-square w-full relative">{p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}</div><div className="p-2 flex flex-col flex-1 justify-between text-left w-full"><span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span><div className="mt-2 flex justify-between items-end w-full"><span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span><div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div></div></div></button>))}</div></div>
-                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><MoneyInput className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={val => updateTransactionPrice(item.id, val || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
+                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen ({cartPoints} pts)</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><MoneyInput className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={val => updateTransactionPrice(item.id, val || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
                                 </div>
                             )}
                         </div>
@@ -1494,7 +1891,7 @@ export default function PosApp() {
                     {filteredProducts.map(p => (
                         <div key={p.id} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all">
                             <div className="aspect-square w-full relative">
-                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200 bg-stone-50" />}
+                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}
                             </div>
                             <div className="p-2 flex flex-col flex-1 justify-between text-left">
                                 <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
@@ -1570,28 +1967,69 @@ export default function PosApp() {
                 </div>
 
                 <div className="mb-6">
-                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-amber-500"/> Por Encargar (Falta Stock)</h2>
+                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-amber-500"/> Por Encargar</h2>
                     <div className="space-y-3">
-                        {filteredSales.pending_order.length === 0 && <div className="text-stone-400 text-sm text-center py-4">No hay pedidos por encargar.</div>}
-                        {filteredSales.pending_order.map(t => {
-                            return (
-                                <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-amber-500">
-                                    <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
-                                        <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
-                                            <span className="text-xs text-stone-400">
-                                                <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
-                                                {formatDateSimple(t.date.seconds)}
-                                            </span>
-                                        </div>
-                                        <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-1 rounded font-bold uppercase">Falta Stock</span></div>
+                        {/* Faltantes de Stock */}
+                        {filteredSales.pending_order.map(t => (
+                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-amber-500">
+                                <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
+                                    <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
+                                        <span className="text-xs text-stone-400">
+                                            <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
+                                            {formatDateSimple(t.date.seconds)}
+                                        </span>
                                     </div>
-                                    <div className="flex gap-2 pt-2 border-t">
-                                        <button onClick={() => handleDeliverOrder(t)} className="flex-1 py-2 bg-stone-200 text-stone-400 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-not-allowed" disabled><Clock className="w-4 h-4"/> Esperando Stock</button>
-                                        <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <div className="text-xl font-black">${formatMoney(t.total)}</div>
+                                        <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-1 rounded font-bold uppercase">Falta Stock</span>
                                     </div>
                                 </div>
-                            );
-                        })}
+                                <div className="flex gap-2 pt-2 border-t">
+                                    <button onClick={() => handleDeliverOrder(t)} className="flex-1 py-2 bg-stone-200 text-stone-400 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-not-allowed" disabled><Clock className="w-4 h-4"/> Esperando Stock</button>
+                                    <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
+                                </div>
+                            </div>
+                        ))}
+
+                        {/* Pedidos Web (Sin stock y no de ciclo) */}
+                        {filteredSales.pending_web.map(t => (
+                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-blue-500 relative overflow-hidden">
+                                <div className="absolute right-0 top-0 bg-blue-100 text-blue-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase flex items-center gap-1"><Globe2 className="w-3 h-3"/> Pedido Web</div>
+                                <div onClick={() => setReceiptDetails(t)} className="cursor-pointer pt-2">
+                                    <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
+                                        <span className="text-xs text-stone-400">
+                                            <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
+                                            {formatDateSimple(t.date.seconds)}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <div className="text-xl font-black">${formatMoney(t.total)}</div>
+                                    </div>
+                                </div>
+                                <div className="flex gap-2 pt-2 border-t">
+                                    <button className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1" disabled><Clock className="w-4 h-4"/> Comprar en Web</button>
+                                    <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
+                                </div>
+                            </div>
+                        ))}
+
+                        {/* Pedidos Ciclo Pendientes (Solo informativos aqui, se gestionan en Ciclos) */}
+                         {filteredSales.pending_cycle.map(t => (
+                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-purple-500 relative overflow-hidden opacity-75">
+                                <div className="absolute right-0 top-0 bg-purple-100 text-purple-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase flex items-center gap-1"><Repeat className="w-3 h-3"/> En Ciclo</div>
+                                <div onClick={() => setReceiptDetails(t)} className="cursor-pointer pt-2">
+                                    <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
+                                        <span className="text-xs text-stone-400">
+                                            <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
+                                            {formatDateSimple(t.date.seconds)}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <div className="text-xl font-black">${formatMoney(t.total)}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 </div>
 
@@ -1659,6 +2097,30 @@ export default function PosApp() {
         )}
 
       </main>
+
+      {/* --- MODAL PARA CREAR CICLO --- */}
+      {isCycleModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+              <div className="bg-white p-6 rounded-3xl w-full max-w-sm shadow-2xl">
+                  <div className="flex justify-between items-center mb-4">
+                      <h2 className="font-bold text-xl text-stone-800">Iniciar Nuevo Ciclo</h2>
+                      <button onClick={() => setIsCycleModalOpen(false)}><X className="w-6 h-6 text-stone-400"/></button>
+                  </div>
+                  <form onSubmit={handleSaveCycle}>
+                      <label className="block text-xs font-bold text-stone-500 uppercase mb-2">Nombre del Ciclo</label>
+                      <input name="name" required className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-4 font-bold" placeholder="Ej: Ciclo 14 2024"/>
+                      
+                      <label className="block text-xs font-bold text-stone-500 uppercase mb-2">Meta de Puntos</label>
+                      <input name="goal" type="number" required className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-4 font-bold" placeholder="Ej: 500"/>
+                      
+                      <label className="block text-xs font-bold text-stone-500 uppercase mb-2">Fecha de Cierre (Pedido)</label>
+                      <input name="closingDate" type="date" required className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-6 font-bold" />
+
+                      <button className="w-full py-4 bg-stone-900 text-white rounded-2xl font-bold shadow-lg">Crear Ciclo</button>
+                  </form>
+              </div>
+          </div>
+      )}
 
       {isCheckoutModalOpen && (
           <div className="fixed inset-0 bg-stone-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
@@ -1741,18 +2203,18 @@ export default function PosApp() {
 
                                 {!stockAnalysis.canDeliverAll && (
                                     <div className="mt-4 bg-white rounded-xl border border-amber-100 p-3 shadow-sm">
-                                        <div className="text-[10px] font-bold text-amber-400 uppercase mb-2 tracking-wider">Productos Faltantes</div>
-                                        <div className="space-y-2 max-h-32 overflow-y-auto custom-scrollbar pr-1">
-                                            {stockAnalysis.missing.map(i => (
-                                                <div key={i.id} className="flex justify-between items-center p-2 bg-amber-50/50 rounded-lg">
-                                                    <div className="flex items-center gap-2 overflow-hidden">
-                                                        <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></div>
-                                                        <span className="text-xs font-bold text-stone-700 truncate">{i.name}</span>
+                                            <div className="text-[10px] font-bold text-amber-400 uppercase mb-2 tracking-wider">Productos Faltantes</div>
+                                            <div className="space-y-2 max-h-32 overflow-y-auto custom-scrollbar pr-1">
+                                                {stockAnalysis.missing.map(i => (
+                                                    <div key={i.id} className="flex justify-between items-center p-2 bg-amber-50/50 rounded-lg">
+                                                        <div className="flex items-center gap-2 overflow-hidden">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></div>
+                                                            <span className="text-xs font-bold text-stone-700 truncate">{i.name}</span>
+                                                        </div>
+                                                        <span className="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded ml-2 whitespace-nowrap">Faltan {i.qty - i.currentStock}</span>
                                                     </div>
-                                                    <span className="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded ml-2 whitespace-nowrap">Faltan {i.qty - i.currentStock}</span>
-                                                </div>
-                                            ))}
-                                        </div>
+                                                ))}
+                                            </div>
                                     </div>
                                 )}
                             </div>
@@ -1905,7 +2367,7 @@ export default function PosApp() {
                                   </div>
                               </div>
                             );
-                        })}
+                          })}
                       </div>
 
                       {selectedPaymentIndex !== null && (
@@ -2087,164 +2549,6 @@ export default function PosApp() {
         </div>
       )}
 
-      {isClientModalOpen && (
-          <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
-              <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
-                  <h2 className="font-bold text-lg mb-4">{editingClient ? 'Editar Cliente' : 'Nuevo Cliente'}</h2>
-                  <form onSubmit={handleSaveClient}>
-                      <input name="name" required defaultValue={editingClient?.name} className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/>
-                      <input name="phone" defaultValue={editingClient?.phone} className="w-full p-3 border rounded-xl mb-4" placeholder="Teléfono"/>
-                      <button className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold">Guardar</button>
-                  </form>
-                  <button onClick={() => { setIsClientModalOpen(false); setEditingClient(null); }} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button>
-              </div>
-          </div>
-      )}
-
-      {isHistoryModalOpen && viewingHistoryProduct && (
-        <div className="fixed inset-0 bg-black/50 z-[80] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col">
-                <div className="p-4 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl">
-                    <div>
-                        <h2 className="text-lg font-bold text-stone-800">Historial: {viewingHistoryProduct.name}</h2>
-                        <p className="text-xs text-stone-500">Ordenado por fecha (Reciente primero)</p>
-                    </div>
-                    <button onClick={() => setIsHistoryModalOpen(false)}><X className="w-6 h-6 text-stone-400"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4">
-                    {loadingHistory ? <div className="text-center py-10 text-stone-400">Cargando...</div> : (
-                        <div className="border rounded-xl overflow-hidden text-xs">
-                            <table className="w-full text-left">
-                                <thead className="bg-stone-100 text-stone-500 font-bold">
-                                    <tr><th className="p-3">Fecha/Hora</th><th className="p-3">Mov.</th><th className="p-3 text-right">Cant.</th><th className="p-3 text-right">Precio</th></tr>
-                                </thead>
-                                <tbody className="divide-y divide-stone-50">
-                                    {productHistory.length === 0 && <tr><td colSpan="4" className="p-4 text-center text-stone-400">Sin movimientos.</td></tr>}
-                                    {productHistory.map((mov) => (
-                                        <tr key={mov.id} className="hover:bg-stone-50">
-                                            <td className="p-3 text-stone-500">{formatDateWithTime(mov.date / 1000)}</td>
-                                            <td className="p-3"><span className={`font-bold ${mov.type === 'IN' ? 'text-green-600' : 'text-red-600'}`}>{mov.type === 'IN' ? 'ENTRADA' : 'VENTA'}</span></td>
-                                            <td className="p-3 text-right font-bold">{mov.qty}</td>
-                                            <td className="p-3 text-right text-stone-600"><div>${formatMoney(mov.price)}</div><div className="text-[9px] text-stone-400 uppercase">{mov.type === 'IN' ? 'Costo' : 'Venta'}</div></td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
-      {receiptDetails && (
-        <div className="fixed inset-0 bg-black/60 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
-            <div className="bg-white w-full max-w-md h-[85vh] sm:h-auto sm:max-h-[90vh] sm:rounded-2xl rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
-                <div className="p-5 border-b flex justify-between items-center bg-stone-50">
-                    <h2 className="font-bold text-lg flex items-center gap-2"><Receipt className="w-5 h-5"/> Detalle {receiptDetails.type === 'purchase' ? 'Recepción' : 'Venta'}</h2>
-                    <button onClick={() => setReceiptDetails(null)} className="bg-white p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-5">
-                    <div className="text-center mb-6">
-                        <div className="text-sm text-stone-500 mb-1">{receiptDetails.type === 'purchase' ? getSupplierName(receiptDetails.clientId) : getClientName(receiptDetails.clientId)}</div>
-                        <div className="text-4xl font-black">${formatMoney(receiptDetails.total)}</div>
-                    </div>
-                    
-                    {receiptDetails.type === 'sale' && (
-                        <div className="bg-stone-50 p-3 rounded-xl border mb-4 text-xs space-y-1">
-                            <div className="flex justify-between"><span>Repartidor:</span> <span className="font-bold">{receiptDetails.courier || 'No registrado'}</span></div>
-                            <div className="flex justify-between"><span>Estado de Pago:</span> 
-                                <span className={`font-bold px-2 py-0.5 rounded ${receiptDetails.paymentStatus === 'paid' ? 'bg-green-100 text-green-700' : receiptDetails.paymentStatus === 'partial' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>
-                                    {receiptDetails.paymentStatus === 'paid' ? 'PAGADO' : receiptDetails.paymentStatus === 'partial' ? 'PARCIAL' : 'PENDIENTE'}
-                                </span>
-                            </div>
-                            {receiptDetails.deliveredAt && <div className="flex justify-between"><span>Fecha Salida:</span> <span>{formatDateWithTime(receiptDetails.deliveredAt?.seconds)}</span></div>}
-                            {receiptDetails.finalizedAt && <div className="flex justify-between text-green-700 font-bold"><span>Fecha Entrega/Cobro:</span> <span>{formatDateSimple(receiptDetails.finalizedAt?.seconds)}</span></div>}
-                        </div>
-                    )}
-
-                    {receiptDetails.type === 'sale' && receiptDetails.paymentSchedule && (
-                        <div className="mb-6">
-                            <h3 className="text-xs font-bold text-stone-400 uppercase mb-2 flex items-center gap-1"><DollarSign className="w-3 h-3"/> Historial de Pagos</h3>
-                            <div className="space-y-2">
-                                {receiptDetails.paymentSchedule.map((item, idx) => (
-                                    <div key={idx} className={`border rounded-xl overflow-hidden ${item.status === 'paid' ? 'border-emerald-200 bg-emerald-50/30' : 'border-stone-100 bg-white'}`}>
-                                        <div className="p-3 flex justify-between items-center">
-                                            <div>
-                                                <div className="font-bold text-stone-700 text-xs">
-                                                    {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : (item.type === 'total' ? 'Pago Total' : 'Saldo Pendiente')}
-                                                </div>
-                                                <div className="text-[10px] text-stone-400">
-                                                    Monto: ${formatMoney(item.amount)} • {item.status === 'paid' ? 'Pagado' : 'Pendiente'}
-                                                </div>
-                                            </div>
-                                            {item.status === 'paid' && <CheckCircle2 className="w-4 h-4 text-emerald-500"/>}
-                                        </div>
-                                        {item.paymentHistory && item.paymentHistory.length > 0 && (
-                                            <div className="bg-white border-t border-stone-100 p-2 text-[10px] space-y-2">
-                                                {item.paymentHistory.map((hist, hIdx) => (
-                                                    <div key={hIdx} className="flex justify-between items-center">
-                                                        <div className="flex flex-col">
-                                                            <span className="font-bold text-stone-600">{formatDateWithTime(hist.date)}</span>
-                                                            <span className="text-stone-400">{hist.method}</span>
-                                                        </div>
-                                                        <div className="flex flex-col items-end">
-                                                            <span className="font-bold text-stone-800">${formatMoney(hist.amount)}</span>
-                                                            {hist.receiptUrl && (
-                                                                <a href={hist.receiptUrl} target="_blank" rel="noreferrer" className="text-blue-500 underline flex items-center gap-1">
-                                                                    <ExternalLink className="w-3 h-3"/> Ver Recibo
-                                                                </a>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {receiptDetails.type === 'sale' && receiptDetails.saleStatus === 'completed' && receiptDetails.totalCost > 0 && (
-                        <div className="bg-stone-50 p-4 rounded-xl border mb-4 space-y-2">
-                            <div className="flex justify-between text-xs text-stone-500"><span>Costo Mercadería (FIFO Exacto)</span><span>${formatMoney(receiptDetails.totalCost)}</span></div>
-                            <div className="flex justify-between font-bold text-stone-800 text-sm pt-2 border-t"><span>Margen Ganancia</span><span className="text-green-600">+${formatMoney(receiptDetails.margin)}</span></div>
-                        </div>
-                    )}
-                    <div className="space-y-3">
-                        <h3 className="text-xs font-bold text-stone-400 uppercase">Productos</h3>
-                        {(receiptDetails.items || []).map((item, idx) => (
-                            <div key={idx} className="py-2 border-b border-dashed last:border-0">
-                                <div className="flex justify-between">
-                                    <div className="text-sm"><span className="font-bold">{item.qty}x</span> {item.name}</div>
-                                    <div className="font-bold">${formatMoney(item.transactionPrice * item.qty)}</div>
-                                </div>
-                                {receiptDetails.type === 'purchase' ? (
-                                     <div className="text-[10px] text-stone-400">Costo unitario: ${formatMoney(item.transactionPrice)}</div>
-                                ) : (
-                                    (item.fifoDetails || []).map((detail, dIdx) => (
-                                        <div key={dIdx} className="text-[10px] text-stone-500 pl-2 mt-1">
-                                        - {detail.qty} un. del {formatDateSimple(detail.date)} a costo ${formatMoney(detail.cost)} c/u
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                    {receiptDetails.saleStatus === 'pending_delivery' && (
-                        <button 
-                            onClick={() => handleDeliverOrder(receiptDetails)} 
-                            className="w-full mt-6 font-bold py-3 rounded-xl bg-blue-600 text-white"
-                        >
-                            Entregar Ahora
-                        </button>
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
       {isProductModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md">
@@ -2270,20 +2574,26 @@ export default function PosApp() {
                       <CheckCircle2 className="w-3 h-3"/> Imagen actual registrada
                   </div>
               )}
+              
+              <input name="customId" placeholder="ID Producto" defaultValue={editingProduct?.customId} className="w-full p-3 border rounded-xl" />
+
               <input name="name" required placeholder="Nombre" defaultValue={editingProduct?.name} className="w-full p-3 border rounded-xl" />
               <select name="brand" required defaultValue={editingProduct?.brand} className="w-full p-3 border rounded-xl bg-white">
                   <option value="">Seleccionar Marca</option>
                   {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
               
-              <div className="relative">
-                  <span className="absolute left-3 top-3 text-stone-400">$</span>
-                  <MoneyInput 
-                      className="w-full pl-7 p-3 border rounded-xl" 
-                      value={productPriceInput} 
-                      onChange={val => setProductPriceInput(val)}
-                      placeholder="Precio" 
-                  />
+              <div className="flex gap-3">
+                  <div className="relative flex-1">
+                      <span className="absolute left-3 top-3 text-stone-400">$</span>
+                      <MoneyInput 
+                          className="w-full pl-7 p-3 border rounded-xl" 
+                          value={productPriceInput} 
+                          onChange={val => setProductPriceInput(val)}
+                          placeholder="Precio" 
+                      />
+                  </div>
+                  <input name="points" type="number" placeholder="Puntos" defaultValue={editingProduct?.points} className="w-1/3 p-3 border rounded-xl" />
               </div>
 
               <select name="category" required defaultValue={editingProduct?.category} className="w-full p-3 border rounded-xl"><option value="">Categoría</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
@@ -2316,8 +2626,6 @@ export default function PosApp() {
           </div>
       )}
       
-      {isCycleModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Ciclo</h2><form onSubmit={e => { e.preventDefault(); simpleSave('cycles', {name: new FormData(e.currentTarget).get('name')}, setIsCycleModalOpen); }}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsCycleModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
-
       {isSupplierModalOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-2xl w-full max-w-sm"><h2 className="font-bold text-lg mb-4">Nuevo Proveedor</h2><form onSubmit={handleSaveSupplier}><input name="name" required className="w-full p-3 border rounded-xl mb-4" placeholder="Nombre"/><button className="w-full py-3 bg-stone-800 text-white rounded-xl font-bold">Guardar</button></form><button onClick={() => setIsSupplierModalOpen(false)} className="w-full mt-2 py-3 bg-stone-100 rounded-xl">Cancelar</button></div></div>}
 
       {showCatalogModal && (
@@ -2358,6 +2666,7 @@ export default function PosApp() {
 
       <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 pb-safe-bottom z-30 shadow-lg">
         <NavButton icon={<LayoutDashboard />} label="Reportes" active={view === 'reports'} onClick={() => setView('reports')} />
+        <NavButton icon={<Repeat />} label="Ciclos" active={view === 'cycles'} onClick={() => setView('cycles')} />
         <NavButton icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => setView('pos')} />
         <NavButton icon={<ShoppingBag />} label="Compras" active={view === 'purchases'} onClick={() => setView('purchases')} />
         <NavButton icon={<Receipt />} label="Pedidos" active={view === 'receipts'} onClick={() => setView('receipts')} />
@@ -2372,4 +2681,3 @@ export default function PosApp() {
 function NavButton({ icon, label, active, onClick }) {
     return <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${active ? 'text-orange-600 bg-orange-50 scale-105' : 'text-stone-400 hover:bg-stone-50'}`}>{React.cloneElement(icon, { className: `w-6 h-6 ${active ? 'fill-current' : ''}` })}<span className="text-[10px] font-bold">{label}</span></button>
 }
-
