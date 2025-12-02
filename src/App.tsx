@@ -65,7 +65,7 @@ import {
   DollarSign, 
   Percent, 
   ChevronDown, 
-  ExternalLink,
+  ExternalLink, 
   QrCode, 
   CreditCard as DebitCard,
   ToggleLeft,
@@ -76,7 +76,9 @@ import {
   ArrowRight,
   StickyNote,
   Globe2,
-  Lock
+  Lock,
+  Zap,
+  Layers
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -96,7 +98,8 @@ import {
   increment, 
   writeBatch, 
   getDocs, 
-  where 
+  where,
+  getDoc 
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -120,8 +123,8 @@ const storage = getStorage(app);
 const APP_ID = "natura-produccion-main";
 
 // --- CONSTANTES ---
-const BRANDS = ['Natura', 'Avon', 'Cyzone', 'Esika', 'L\'Bel'];
-const WEB_SUPPLIERS = ['Natura Web', 'Esika Web', 'L\'Bel Web'];
+const BRANDS = ['Natura', 'Avon', 'Cyzone', 'Esika', "L'Bel"];
+const WEB_SUPPLIERS = ['Natura Web', 'Esika Web', "L'Bel Web"];
 const COURIERS = ['Yo (Directo)', 'Mamá (Puesto Feria)', 'Tía Luisa']; 
 
 // --- HELPER PARA ID CORTO ---
@@ -214,14 +217,13 @@ export default function PosApp() {
 
   const [paymentMethod, setPaymentMethod] = useState('Efectivo'); 
   const [editingTransactionId, setEditingTransactionId] = useState(null); 
-  const [originalBatchesMap, setOriginalBatchesMap] = useState({}); 
     
   const [loading, setLoading] = useState(true); 
   const [searchTerm, setSearchTerm] = useState('');
   const [processingMsg, setProcessingMsg] = useState(''); 
 
-  // SALES MODE STATE
-  const [salesMode, setSalesMode] = useState(null); // 'stock', 'cycle', 'exchange'
+  // SALES LOGIC STATES - PER ITEM
+  const [itemActions, setItemActions] = useState({}); // { itemId: 'cycle' | 'express' }
 
   // Alertas y Confirmaciones
   const [alertState, setAlertState] = useState({ show: false, title: '', message: '', type: 'info' }); 
@@ -240,17 +242,10 @@ export default function PosApp() {
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
-  const [showPreTicket, setShowPreTicket] = useState(false); 
-  const [showStockAlertModal, setShowStockAlertModal] = useState(false); 
   const [showCatalogModal, setShowCatalogModal] = useState(false); 
   const [isCycleModalOpen, setIsCycleModalOpen] = useState(false);
-  const [showExpiringModal, setShowExpiringModal] = useState(false);
-  const [showPendingOrdersModal, setShowPendingOrdersModal] = useState(false);
-  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
-  const [viewingHistoryProduct, setViewingHistoryProduct] = useState(null);
   const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
   const [deliveryTransaction, setDeliveryTransaction] = useState(null);
-  const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState('Efectivo');
   const [selectedCourier, setSelectedCourier] = useState('Yo (Directo)');
   const [editingProduct, setEditingProduct] = useState(null);
   const [productPriceInput, setProductPriceInput] = useState(''); 
@@ -259,12 +254,10 @@ export default function PosApp() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [orderSource, setOrderSource] = useState(null);
   const [catalogBrand, setCatalogBrand] = useState(''); 
-  const [installmentInfo, setInstallmentInfo] = useState({ isInstallments: false, count: 1 });
   const [checkInOrder, setCheckInOrder] = useState(null); 
   const [checkInItems, setCheckInItems] = useState([]);
   const [selectedCycle, setSelectedCycle] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('ALL');
-  const [stockFilter, setStockFilter] = useState('ALL'); 
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [showClientOptions, setShowClientOptions] = useState(false);
   const clientInputRef = useRef(null);
@@ -273,26 +266,12 @@ export default function PosApp() {
   const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(null); 
   const [paymentAmountInput, setPaymentAmountInput] = useState('');
   const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); 
-  const [reportPhones, setReportPhones] = useState(() => {
-      try {
-        const saved = localStorage.getItem('stock_report_phones');
-        return saved ? JSON.parse(saved) : { phone1: '', phone2: '' };
-      } catch (e) {
-        return { phone1: '', phone2: '' };
-      }
-  });
+  
+  // MODALES QUE FALTABAN
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [viewingHistoryProduct, setViewingHistoryProduct] = useState(null);
 
-  useEffect(() => {
-      localStorage.setItem('stock_report_phones', JSON.stringify(reportPhones));
-  }, [reportPhones]);
-
-  const [reportStartDate, setReportStartDate] = useState(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('en-CA'); 
-  });
-  const [reportEndDate, setReportEndDate] = useState(() => {
-    return new Date().toLocaleDateString('en-CA'); 
-  });
+  const [purchasesSubView, setPurchasesSubView] = useState('orders'); // 'orders' | 'catalog'
 
   // --- HELPER: CYCLE MAP ---
   const cycleMap = useMemo(() => {
@@ -310,28 +289,43 @@ export default function PosApp() {
         if (currentStock >= item.qty) {
             available.push(item);
         } else {
-            missing.push({ ...item, currentStock });
+            if (currentStock > 0) {
+                 available.push({ ...item, qty: currentStock });
+                 missing.push({ ...item, qty: item.qty - currentStock, currentStock: 0 }); // El resto
+            } else {
+                 missing.push({ ...item, currentStock });
+            }
             canDeliverAll = false;
         }
     });
     return { available, missing, canDeliverAll };
   }, [cart, products]);
 
-  // --- ESTADO DERIVADO PARA DELIVERY TYPE ---
-  const [deliveryType, setDeliveryType] = useState('immediate'); // 'immediate' | 'order'
+  // Helper para etiquetas de pedidos
+  const getOrderTag = (t) => {
+      let isCycle = false;
+      let isExpress = false;
+      let isStock = false;
+      let isReserved = false;
 
-  // Actualizar deliveryType cuando cambia el análisis de stock
-  useEffect(() => {
-    if (isCheckoutModalOpen) {
-        if (stockAnalysis.canDeliverAll) {
-            setDeliveryType('immediate');
-        } else {
-            setDeliveryType('order');
-        }
-        // Reset dates on open
-        setCheckoutData(prev => ({...prev, installmentDates: {}}));
-    }
-  }, [isCheckoutModalOpen, stockAnalysis.canDeliverAll]);
+      (t.items || []).forEach(i => {
+          if (i.orderType === 'cycle') isCycle = true;
+          if (i.orderType === 'express') isExpress = true;
+          if (i.status === 'delivered') isStock = true; // Delivered instant
+          if (i.status === 'reserved') isReserved = true; // Reserved waiting for others
+      });
+
+      // Lógica de Prioridad para la etiqueta
+      if ((isCycle && isExpress) || ((isCycle || isExpress) && (isStock || isReserved))) {
+          return { label: 'Mixto', color: 'bg-indigo-100 text-indigo-700', icon: Layers };
+      }
+      if (isExpress) return { label: 'Pedido Express', color: 'bg-amber-100 text-amber-700', icon: Zap };
+      if (isCycle) return { label: 'Pedido Ciclo', color: 'bg-purple-100 text-purple-700', icon: Repeat };
+      if (isStock || isReserved) return { label: 'Entrega Inmediata', color: 'bg-emerald-100 text-emerald-700', icon: PackageCheck };
+      
+      return { label: 'Pendiente', color: 'bg-stone-100 text-stone-500', icon: Clock };
+  };
+
 
   // Auth & Sync
   useEffect(() => {
@@ -435,12 +429,9 @@ export default function PosApp() {
       return cycles.find(c => c.status === 'open') || null;
   }, [cycles]);
 
-  // --- GUARDAR VENTA (MODIFIED TO HANDLE SALES MODE) ---
+  // --- GUARDAR VENTA (MODIFIED NEW LOGIC) ---
   const handleConfirmCheckout = async () => {
     if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
-    
-    const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
-    const totalPoints = cart.reduce((acc, item) => acc + ((item.points || 0) * item.qty), 0);
     
     // Validar Fechas de Cuotas
     if (paymentPlanType === 'installments') {
@@ -454,7 +445,7 @@ export default function PosApp() {
     }
 
     setLoading(true);
-    setProcessingMsg("Registrando...");
+    setProcessingMsg("Procesando Venta...");
 
     try {
         const batch = writeBatch(db);
@@ -462,35 +453,53 @@ export default function PosApp() {
         const displayId = generateShortId();
         const now = new Date();
 
-        // FIFO Logic (Solo si es venta inmediata de stock)
         let transactionFIFO = 0;
-        let finalItems = [...cart];
-        let saleStatus = 'pending_order'; // Por defecto
+        let finalItems = [];
+        
+        // Logica Maestra: Si falta ALGO, el status es pending_order. Si TODO está, es pending_delivery.
+        const isCompleteReady = stockAnalysis.missing.length === 0;
+        const mainStatus = isCompleteReady ? 'pending_delivery' : 'pending_order';
 
-        // LOGIC BASED ON SALES MODE
-        if (salesMode === 'cycle') {
-            saleStatus = 'pending_cycle'; // Acumulado en ciclo
-        } else if (salesMode === 'exchange') {
-            saleStatus = 'pending_arrival'; // Waiting for the exchange item to arrive
-        } else {
-            // STOCK / WEB MODE
-            if (stockAnalysis.canDeliverAll) {
-                 saleStatus = 'pending_delivery'; 
-                 for (let item of finalItems) {
-                     const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
-                     item.fifoTotalCost = totalCost; 
-                     item.fifoDetails = fifoDetails;
-                     transactionFIFO += totalCost;
-                     batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
-                     batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
-                 }
-            } else {
-                // NO HAY STOCK EN VENTA STOCK -> ES PEDIDO WEB
-                saleStatus = 'pending_web';
-            }
+        // PROCESS AVAILABLE ITEMS
+        for (let item of stockAnalysis.available) {
+             const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
+             
+             batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
+             batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
+             
+             transactionFIFO += totalCost;
+             finalItems.push({
+                 ...item,
+                 fifoTotalCost: totalCost,
+                 fifoDetails: fifoDetails,
+                 // Si está lista la orden completa, es 'delivered' (listo para entrega inmediata).
+                 // Si no, es 'reserved' (esperando a los demás).
+                 status: isCompleteReady ? 'delivered' : 'reserved' 
+             });
         }
 
-        const margin = total - transactionFIFO;
+        // PROCESS MISSING ITEMS
+        // Validar Ciclo si hay items marcados como ciclo
+        const hasCycleItems = stockAnalysis.missing.some(i => (itemActions[i.id] || 'cycle') === 'cycle');
+        if (hasCycleItems && !activeCycle) {
+             triggerAlert("Sin Ciclo Activo", "Tienes productos marcados para Ciclo, pero no hay uno abierto.", "error");
+             setLoading(false);
+             return;
+        }
+
+        for (let item of stockAnalysis.missing) {
+             const selectedType = itemActions[item.id] || 'cycle'; // default per item
+             finalItems.push({
+                 ...item,
+                 status: 'pending',
+                 orderType: selectedType // 'cycle' or 'express'
+             });
+        }
+
+        const total = cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0);
+        const totalPoints = cart.reduce((acc, item) => acc + ((item.points || 0) * item.qty), 0);
+        
+        const margin = total - transactionFIFO; 
         const paymentSchedule = calculatePaymentSchedule(total, paymentPlanType, checkoutData);
         
         const transactionData = {
@@ -499,7 +508,7 @@ export default function PosApp() {
             type: 'sale',
             items: finalItems,
             total: total,
-            totalPoints: totalPoints, // Save points
+            totalPoints: totalPoints,
             clientId: selectedClient,
             date: { seconds: now.getTime() / 1000 },
             paymentPlanType, 
@@ -510,11 +519,11 @@ export default function PosApp() {
             totalCost: transactionFIFO,
             margin: margin,
             marginPercent: (total > 0) ? (margin/total)*100 : 0,
-            saleStatus: saleStatus, 
-            origin: salesMode === 'cycle' ? 'cycle' : (salesMode === 'exchange' ? 'exchange' : 'POS'),
-            cycleId: salesMode === 'cycle' && activeCycle ? activeCycle.id : null, // Link to cycle if applicable
+            saleStatus: mainStatus, 
+            origin: 'POS',
+            cycleId: activeCycle ? activeCycle.id : null, // Link loosely to active cycle if exists
             courier: null,
-            deliveredAt: null,
+            deliveredAt: isCompleteReady ? { seconds: now.getTime() / 1000 } : null,
             finalizedAt: null 
         };
 
@@ -524,14 +533,9 @@ export default function PosApp() {
         clearCart();
         setIsCheckoutModalOpen(false);
         setCheckoutData({ installmentsCount: 3, installmentDates: {}, downPayment: '' }); 
-        setSalesMode(null); // Reset mode
+        setItemActions({}); // reset actions
 
-        let successMsg = "Venta registrada.";
-        if (salesMode === 'cycle') successMsg = `Agregado al Ciclo ${activeCycle?.name}.`;
-        if (salesMode === 'exchange') successMsg = "Intercambio registrado por llegar.";
-        if (saleStatus === 'pending_web') successMsg = "Falta stock: Registrado como Pedido Web.";
-
-        triggerAlert("Éxito", successMsg, "success");
+        triggerAlert("Éxito", "Venta registrada correctamente.", "success");
 
     } catch (error) {
         console.error(error);
@@ -585,15 +589,6 @@ export default function PosApp() {
     return { totalCost, batchUpdates, fifoDetails };
   };
 
-  const handleSendStockReport = (phoneNumber) => {
-      if (!phoneNumber) { triggerAlert("Falta número", "Ingresa un número de teléfono.", "info"); return; }
-      const lowStockItems = products.filter(p => p.stock < 4);
-      if (lowStockItems.length === 0) { triggerAlert("Todo bien", "No hay productos con stock bajo.", "success"); return; }
-      let message = `🚨 *REPORTE STOCK* 🚨\nFecha: ${new Date().toLocaleDateString()}\n\n`;
-      lowStockItems.forEach(p => message += `- ${p.name}: ${p.stock} u.\n`);
-      window.open(`https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`, '_blank');
-  };
-
   const handleSendCatalog = (categoryId) => {
       let items = categoryId === 'ALL' ? products : products.filter(p => p.category === categoryId);
       items = items.filter(p => p.stock > 0).sort((a,b) => a.name.localeCompare(b.name));
@@ -613,7 +608,10 @@ export default function PosApp() {
       }
       let message = `Hola *${client.name}*! 👋\n\nTe cuento que ya tengo listos tus productos de Natura/Avon:\n`;
       (transaction.items || []).forEach(i => {
-          message += `- ${i.name} x${i.qty}\n`;
+          // Solo notificar de lo que ya llegó (reserved -> delivered) o lo que ya estaba
+          if (i.status === 'delivered' || i.status === 'reserved') { 
+               message += `- ${i.name} x${i.qty}\n`;
+          }
       });
       message += `\nTotal: $${formatMoney(transaction.total)}\n\n¿Cuándo te acomoda que coordinemos la entrega?`;
       window.open(`https://wa.me/${client.phone}?text=${encodeURIComponent(message)}`, '_blank');
@@ -639,7 +637,7 @@ export default function PosApp() {
           });
       });
       transactions.forEach(t => {
-          if (t.type === 'sale' && (t.saleStatus === 'completed' || t.saleStatus === 'in_transit')) { 
+          if (t.type === 'sale') { 
               const item = (t.items || []).find(i => i.id === prodId);
               if (item) {
                   history.push({
@@ -698,10 +696,6 @@ export default function PosApp() {
           confirmTitle = "Devolución de Stock";
           confirmMsg = "IMPORTANTE: ¿El cliente NO retiró el pedido?\n\nAl eliminar este envío, el stock volverá a tu inventario automáticamente.";
           type = "danger";
-      } else if (transaction.saleStatus === 'pending_order') {
-          confirmTitle = "Cancelar Encargo";
-          confirmMsg = "¿Cancelar encargo del cliente?";
-          type = "danger";
       }
 
       setConfirmationState({
@@ -716,11 +710,14 @@ export default function PosApp() {
               try {
                   const batch = writeBatch(db);
                   batch.delete(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id));
-                  if (transaction.saleStatus === 'completed' || transaction.saleStatus === 'in_transit' || transaction.saleStatus === 'pending_delivery') { 
+                  
+                  // Restore stock if it was delivered or in transit OR RESERVED (important for mixed orders)
+                  if (transaction.saleStatus !== 'pending_order' && transaction.saleStatus !== 'pending_cycle') { 
                       (transaction.items || []).forEach(item => {
-                          const productRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
-                          const adjustment = transaction.type === 'sale' ? item.qty : -item.qty;
-                          batch.update(productRef, { stock: increment(adjustment) });
+                          if (item.status === 'delivered' || item.status === 'reserved') {
+                            const productRef = doc(db, `artifacts/${APP_ID}/public/data/products`, item.id);
+                            batch.update(productRef, { stock: increment(item.qty) });
+                          }
                       });
                   }
                   await batch.commit();
@@ -740,37 +737,53 @@ export default function PosApp() {
   const handleDeliverOrder = (transaction) => {
       setReceiptDetails(null); 
       setDeliveryTransaction(transaction);
-      setDeliveryPaymentMethod('Efectivo');
       setSelectedCourier('Yo (Directo)'); 
       setIsDeliveryModalOpen(true);
   };
 
   const startDeliveryProcess = async () => {
       if (!deliveryTransaction) return;
+
+      // --- VALIDACIÓN DE DEUDA (REGLA DE NEGOCIO) ---
+      // Si es entrega directa (se cierra la venta) y NO es cuotas, debe estar pagado.
+      if (selectedCourier === 'Yo (Directo)' && deliveryTransaction.paymentPlanType === 'full' && deliveryTransaction.balance > 0) {
+          triggerAlert(
+              "Pago Pendiente", 
+              "⛔ No puedes entregar este pedido porque tiene deuda pendiente.\n\nPor favor ve a 'Deudores' y registra el pago completo antes de entregar.", 
+              "error"
+          );
+          return;
+      }
+      // ----------------------------------------------
+
       setLoading(true);
       setProcessingMsg(selectedCourier === 'Yo (Directo)' ? "Cerrando Venta..." : "Enviando a Reparto...");
       
       try {
           const batch = writeBatch(db);
           
-          let finalTotalCost = deliveryTransaction.totalCost;
+          let finalTotalCost = deliveryTransaction.totalCost || 0;
           const updatedItems = [];
           
-          if (deliveryTransaction.saleStatus === 'pending_order' || deliveryTransaction.saleStatus === 'pending_arrival' || deliveryTransaction.saleStatus === 'pending_web') {
-              finalTotalCost = 0; // Recalculamos costo FIFO porque recién sale
-              for (const item of (deliveryTransaction.items || [])) {
+          // Re-calculate FIFO for pending items that are now being delivered
+          for (const item of (deliveryTransaction.items || [])) {
+               if (item.status === 'pending') {
                    const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
                    finalTotalCost += totalCost;
                    updatedItems.push({
                        ...item,
+                       status: 'delivered', // Now delivered
                        fifoTotalCost: totalCost,
                        fifoDetails: fifoDetails
                    });
                    batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
                    batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
-              }
-          } else {
-              updatedItems.push(...(deliveryTransaction.items || []));
+               } else if (item.status === 'reserved') {
+                   // Reserved items are now delivered, no stock change (already deducted)
+                   updatedItems.push({ ...item, status: 'delivered' });
+               } else {
+                   updatedItems.push(item);
+               }
           }
           
           const transRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, deliveryTransaction.id);
@@ -810,6 +823,19 @@ export default function PosApp() {
       const transaction = confirmDeliveryModal.transaction;
       if (!transaction || !transaction.id) return;
       
+      // --- VALIDACIÓN DE DEUDA (REGLA DE NEGOCIO - CONFIRMACIÓN) ---
+      // Al confirmar que llegó el courier, si no es cuotas, debe estar pagado.
+      if (transaction.paymentPlanType === 'full' && transaction.balance > 0) {
+          setConfirmDeliveryModal({ show: false, transaction: null });
+          triggerAlert(
+              "Pago Pendiente", 
+              "⛔ El pedido no está pagado.\n\nSi el repartidor trajo el dinero, regístralo primero en 'Deudores' antes de confirmar la entrega.", 
+              "error"
+          );
+          return;
+      }
+      // ----------------------------------------------
+
       setConfirmDeliveryModal({ show: false, transaction: null }); 
       setLoading(true);
       setProcessingMsg("Finalizando Venta...");
@@ -836,7 +862,6 @@ export default function PosApp() {
     setCart(prev => {
       const existing = prev.find(p => p.id === product.id);
       if (existing) return prev.map(p => p.id === product.id ? { ...p, qty: p.qty + 1 } : p);
-      // Ensure points are passed to cart item, init isMagazinePrice false
       return [...prev, { ...product, transactionPrice: view === 'purchases' ? 0 : product.price, qty: 1, expirationDate: '', points: product.points || 0, isMagazinePrice: false, originalPrice: product.price }];
     });
   };
@@ -847,7 +872,7 @@ export default function PosApp() {
           return {
               ...p,
               isMagazinePrice: newIsMagazine,
-              transactionPrice: newIsMagazine ? 0 : p.originalPrice // Reset to 0 if switching to magazine so user types it, or keep old? Better 0 to force entry
+              transactionPrice: newIsMagazine ? 0 : p.originalPrice 
           };
       }
       return p;
@@ -862,20 +887,17 @@ export default function PosApp() {
       return p;
   }));
   const updateTransactionPrice = (id, p) => setCart(prev => prev.map(i => i.id === id ? { ...i, transactionPrice: p } : i));
-  const updateExpirationDate = (id, d) => setCart(prev => prev.map(i => i.id === id ? { ...i, expirationDate: d } : i));
   const updateCheckInDate = (tempId, date) => setCheckInItems(prev => prev.map(i => i._tempId === tempId ? { ...i, expirationDate: date } : i));
 
   const clearCart = () => { 
       setCart([]); setSelectedClient(''); setClientSearchTerm(''); setSelectedSupplier(''); 
       setPaymentMethod(''); setEditingTransactionId(null); 
-      setOriginalBatchesMap({}); 
       setOrderSource(null);
       setCatalogBrand(''); 
       setSelectedCycle(''); 
-      setInstallmentInfo({ isInstallments: false, count: 1 });
-      setDeliveryType('immediate');
       setPaymentPlanType('full');
       setCheckoutData({ installmentsCount: 3, installmentDates: {} });
+      setItemActions({});
   };
   const cartTotal = useMemo(() => cart.reduce((acc, item) => acc + (item.transactionPrice * item.qty), 0), [cart]);
   const cartPoints = useMemo(() => cart.reduce((acc, item) => acc + ((item.points || 0) * item.qty), 0), [cart]);
@@ -901,7 +923,7 @@ export default function PosApp() {
             clientId: selectedSupplier || 'Stock Personal', 
             date: { seconds: now.getTime() / 1000 },
             saleStatus: 'pending_arrival', 
-            installments: installmentInfo.isInstallments ? installmentInfo.count : 1,
+            installments: 1,
             orderType: orderSource || 'cycle_order', 
             cycleId: selectedCycle || null 
         });
@@ -935,6 +957,87 @@ export default function PosApp() {
       setCheckInOrder(transaction);
   };
 
+  const processPendingAllocations = async (arrivedProductIds) => {
+      setProcessingMsg("Asignando stock a pedidos pendientes...");
+      try {
+          const salesRef = collection(db, `artifacts/${APP_ID}/public/data/transactions`);
+          const q = query(salesRef, where('type', '==', 'sale'));
+          const snapshot = await getDocs(q);
+          
+          const pendingSales = snapshot.docs
+              .map(d => ({...d.data(), id: d.id}))
+              .filter(t => ['pending_order', 'pending_cycle', 'pending_web', 'pending_arrival'].includes(t.saleStatus));
+
+          if (pendingSales.length === 0) return;
+
+          const batch = writeBatch(db);
+          let updatesCount = 0;
+          
+          const productsRef = collection(db, `artifacts/${APP_ID}/public/data/products`);
+          
+          for (const sale of pendingSales) {
+              let isSaleModified = false;
+              let saleItems = [...sale.items];
+              let allItemsReserved = true;
+
+              for (let i = 0; i < saleItems.length; i++) {
+                  const item = saleItems[i];
+                  
+                  if (item.status === 'pending' && arrivedProductIds.includes(item.id)) {
+                      const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
+                      
+                      const allocatedQty = fifoDetails.filter(d => d.note !== 'Sin Lote').reduce((a, b) => a + b.qty, 0);
+                      
+                      if (allocatedQty >= item.qty) {
+                          // 1. Update Batch
+                          batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
+                          
+                          // 2. Update Product
+                          batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
+                          
+                          // 3. Update Item in Memory
+                          saleItems[i] = {
+                              ...item,
+                              status: 'reserved',
+                              fifoTotalCost: totalCost,
+                              fifoDetails: fifoDetails
+                          };
+                          isSaleModified = true;
+                      } else {
+                          allItemsReserved = false;
+                      }
+                  } else if (item.status === 'pending') {
+                      allItemsReserved = false;
+                  }
+              }
+
+              if (isSaleModified) {
+                  const updates = { items: saleItems };
+                  const newTotalCost = saleItems.reduce((acc, it) => acc + (it.fifoTotalCost || 0), 0);
+                  updates.totalCost = newTotalCost;
+                  updates.margin = sale.total - newTotalCost;
+                  updates.marginPercent = sale.total > 0 ? (updates.margin / sale.total) * 100 : 0;
+
+                  if (allItemsReserved) {
+                      updates.saleStatus = 'pending_delivery';
+                      updates.readyAt = { seconds: Date.now() / 1000 };
+                  }
+                  
+                  batch.update(doc(db, `artifacts/${APP_ID}/public/data/transactions`, sale.id), updates);
+                  updatesCount++;
+              }
+          }
+
+          if (updatesCount > 0) {
+              await batch.commit();
+              triggerAlert("Pedidos Actualizados", `${updatesCount} pedidos ahora tienen stock asignado.`, "success");
+          }
+
+      } catch (e) {
+          console.error("Error allocating stock:", e);
+      }
+  };
+
   const confirmCheckIn = async () => {
       if (checkInItems.some(i => !i.expirationDate)) {
           triggerAlert("Faltan Fechas", "Ingresa el vencimiento de CADA producto.", "error");
@@ -946,8 +1049,8 @@ export default function PosApp() {
 
       try {
           const batch = writeBatch(db);
-          
           const isInvestment = checkInOrder.clientId === 'Para Inversión';
+          const arrivedProductIds = [];
 
           checkInItems.forEach(item => {
               const batchRef = doc(collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`));
@@ -963,11 +1066,12 @@ export default function PosApp() {
                   transactionId: checkInOrder.id
               });
               batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(1) });
+              if (!arrivedProductIds.includes(item.id)) arrivedProductIds.push(item.id);
           });
 
           const transRef = doc(db, `artifacts/${APP_ID}/public/data/transactions`, checkInOrder.id);
           batch.update(transRef, {
-              type: isInvestment ? 'stock_entry' : 'purchase', // Mark as stock_entry if investment to hide from sales/receipts
+              type: isInvestment ? 'stock_entry' : 'purchase', 
               saleStatus: 'completed',
               checkInDate: { seconds: Date.now() / 1000 }
           });
@@ -975,7 +1079,13 @@ export default function PosApp() {
           await batch.commit();
           setCheckInOrder(null);
           setCheckInItems([]);
-          triggerAlert("Stock Actualizado", "Productos ingresados correctamente.", "success");
+          
+          // Trigger allocation logic after successful stock entry
+          if (arrivedProductIds.length > 0) {
+              await processPendingAllocations(arrivedProductIds);
+          } else {
+              triggerAlert("Stock Actualizado", "Productos ingresados correctamente.", "success");
+          }
 
       } catch (error) {
           console.error(error);
@@ -1181,11 +1291,7 @@ export default function PosApp() {
   const filteredProducts = products.filter(p => {
       const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.category.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = selectedCategoryFilter === 'ALL' || p.category === selectedCategoryFilter;
-      let matchesStock = true;
-      if (stockFilter === 'CRITICAL') matchesStock = p.stock <= 1;
-      if (stockFilter === 'LOW') matchesStock = p.stock > 1 && p.stock < 4;
-      if (stockFilter === 'GOOD') matchesStock = p.stock >= 4;
-      return matchesSearch && matchesCategory && matchesStock;
+      return matchesSearch && matchesCategory;
   });
 
   const filteredClientsForSearch = clients.filter(c => {
@@ -1202,11 +1308,8 @@ export default function PosApp() {
       return {
           completed: all.filter(t => t.saleStatus === 'completed'),
           pending_delivery: all.filter(t => t.saleStatus === 'pending_delivery'),
-          pending_order: all.filter(t => t.saleStatus === 'pending_order'),
+          pending: all.filter(t => t.saleStatus === 'pending' || t.saleStatus === 'pending_order' || t.saleStatus === 'pending_cycle' || t.saleStatus === 'pending_web'),
           inTransit: all.filter(t => t.saleStatus === 'in_transit'),
-          pending_cycle: all.filter(t => t.saleStatus === 'pending_cycle'),
-          pending_arrival: all.filter(t => t.saleStatus === 'pending_arrival'),
-          pending_web: all.filter(t => t.saleStatus === 'pending_web'),
       };
   }, [transactions]);
 
@@ -1216,9 +1319,8 @@ export default function PosApp() {
 
   const pendingArrivals = useMemo(() => {
       const stockOrders = filteredOrders.filter(t => t.saleStatus === 'pending_arrival');
-      const clientOrders = filteredSales.pending_arrival;
-      return [...stockOrders, ...clientOrders].sort((a,b) => a.date.seconds - b.date.seconds);
-  }, [filteredOrders, filteredSales]);
+      return stockOrders.sort((a,b) => a.date.seconds - b.date.seconds);
+  }, [filteredOrders]);
 
   const purchaseHistoryData = filteredOrders.filter(t => t.type === 'purchase' || t.type === 'stock_entry');
 
@@ -1235,35 +1337,6 @@ export default function PosApp() {
       return s ? s.name : id || 'Proveedor'; 
   };
 
-  const expiringProducts = useMemo(() => {
-      const expiring = inventoryBatches.filter(b => b.remainingQty > 0 && b.expirationDate);
-      expiring.sort((a, b) => new Date(a.expirationDate) - new Date(b.expirationDate));
-      return expiring.slice(0, 10); 
-  }, [inventoryBatches]);
-
-  const pendingOrdersData = useMemo(() => {
-      const pendingMap = {}; 
-      const tempStock = {}; 
-      products.forEach(p => tempStock[p.id] = p.stock);
-      const pendingTrans = transactions.filter(t => t.type === 'sale' && (t.saleStatus === 'pending' || t.saleStatus === 'pending_order'));
-      pendingTrans.sort((a,b) => (a.date.seconds - b.date.seconds));
-      pendingTrans.forEach(t => {
-          (t.items || []).forEach(item => {
-               const product = products.find(p => p.id === item.id);
-               const brand = product ? product.brand : (item.brand || 'Sin Marca');
-               const currentStock = tempStock[item.id] || 0;
-               if (currentStock < item.qty) {
-                   const missingQty = item.qty - currentStock;
-                   if (!pendingMap[brand]) pendingMap[brand] = [];
-                   const existingItem = pendingMap[brand].find(i => i.id === item.id);
-                   if (existingItem) { existingItem.qty += missingQty; } else { pendingMap[brand].push({ ...item, qty: missingQty }); }
-                   tempStock[item.id] = 0;
-               } else { tempStock[item.id] -= item.qty; }
-          });
-      });
-      return pendingMap;
-  }, [transactions, products]);
-
   // --- LOGIC FOR CYCLES VIEW ---
   
   const activeCycleStats = useMemo(() => {
@@ -1271,7 +1344,7 @@ export default function PosApp() {
       if (!activeCycle) return { totalPoints: 0, clientPoints: 0, stockPoints: 0, progress: 0, orders: [], remainingDays: 0 };
       
       const ordersInCycle = transactions.filter(t => 
-          (t.type === 'order' || t.type === 'sale') && 
+          (t.type === 'order' || (t.type === 'sale' && t.cycleId === activeCycle.id)) && 
           t.cycleId === activeCycle.id
       );
       
@@ -1335,7 +1408,7 @@ export default function PosApp() {
       setConfirmationState({
           show: true,
           title: "Cerrar Ciclo",
-          message: `¿Estás seguro de cerrar el ciclo "${activeCycle.name}"?\n\nTodos los pedidos pendientes pasarán a estado "Por Llegar".`,
+          message: `¿Estás seguro de cerrar el ciclo "${activeCycle.name}"?\n\nTodos los pedidos pendientes pasarán a estado "Por Encargar" (Esperando Stock).`,
           type: "neutral",
           onConfirm: async () => {
               setConfirmationState(prev => ({ ...prev, show: false }));
@@ -1346,10 +1419,10 @@ export default function PosApp() {
                   const batch = writeBatch(db);
                   const cycleOrders = activeCycleStats.orders;
                   
-                  // Update all cycle orders to pending_arrival
+                  // Update all cycle orders to pending_order so they appear in "Por Encargar"
                   cycleOrders.forEach(order => {
                       batch.update(doc(db, `artifacts/${APP_ID}/public/data/transactions`, order.id), {
-                          saleStatus: 'pending_arrival',
+                          saleStatus: 'pending_order', 
                           orderedAt: new Date().toISOString()
                       });
                   });
@@ -1361,7 +1434,7 @@ export default function PosApp() {
                   });
                   
                   await batch.commit();
-                  triggerAlert("Ciclo Cerrado", "Los pedidos se han generado correctamente.", "success");
+                  triggerAlert("Ciclo Cerrado", "Los pedidos ahora están en 'Por Encargar'.", "success");
               } catch(e) {
                   console.error(e);
                   triggerAlert("Error", "Falló al cerrar ciclo", "error");
@@ -1385,67 +1458,12 @@ export default function PosApp() {
       switch(view) {
           case 'pos': return 'Registra Venta';
           case 'cycles': return 'Gestión Ciclos';
-          case 'purchases': return 'Compras'; 
+          case 'purchases': return 'Compras / Stock'; 
           case 'receipts': return 'Pedidos'; 
-          case 'inventory': return 'Inventario';
-          case 'reports': return 'Reportes';
           case 'finances': return 'Deudores';
-          case 'clients': return 'Clientes';
           default: return view;
       }
   };
-
-  const setQuickDate = (type) => {
-      const now = new Date();
-      const formatDate = (d) => d.toLocaleDateString('en-CA');
-      let start = new Date();
-      let end = new Date();
-      if (type === 'today') { /* no op */ }
-      else if (type === 'yesterday') { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
-      else if (type === 'week') { start.setDate(start.getDate() - start.getDay() + (start.getDay() === 0 ? -6 : 1)); }
-      else if (type === 'month') { start.setDate(1); }
-      setReportStartDate(formatDate(start)); setReportEndDate(formatDate(end));
-  };
-
-  const reportData = useMemo(() => {
-    const start = new Date(`${reportStartDate}T00:00:00`);
-    const end = new Date(`${reportEndDate}T23:59:59.999`);
-    const reportTrans = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'completed' && t.date && t.date.seconds && new Date(t.date.seconds * 1000) >= start && new Date(t.date.seconds * 1000) <= end);
-    
-    const totalSales = reportTrans.reduce((acc, t) => acc + t.total, 0);
-    const totalCost = reportTrans.reduce((acc, t) => acc + (t.totalCost || 0), 0);
-    const margin = totalSales - totalCost;
-    
-    const productMap = new Map();
-    reportTrans.forEach(t => (t.items || []).forEach(i => {
-        const ex = productMap.get(i.id) || { name: i.name, qty: 0, revenue: 0 };
-        productMap.set(i.id, { ...ex, qty: ex.qty + i.qty, revenue: ex.revenue + (i.qty * i.transactionPrice) });
-    }));
-    const productRanking = Array.from(productMap.values()).sort((a,b) => b.revenue - a.revenue).slice(0, 5);
-
-    const clientMap = new Map();
-    reportTrans.forEach(t => {
-        const cname = getClientName(t.clientId);
-        const ex = clientMap.get(cname) || { name: cname, count: 0, total: 0 };
-        clientMap.set(cname, { ...ex, count: ex.count + 1, total: ex.total + t.total });
-    });
-    const clientRanking = Array.from(clientMap.values()).sort((a,b) => b.total - a.total).slice(0, 5);
-
-    const timeline = {};
-    reportTrans.forEach(t => {
-        if (t.date && t.date.seconds) {
-            const d = new Date(t.date.seconds * 1000);
-            const k = d.toISOString().split('T')[0]; 
-            timeline[k] = (timeline[k] || 0) + t.total;
-        }
-    });
-    const timelineData = Object.entries(timeline).sort((a,b) => a[0].localeCompare(b[0])).map(([k,v]) => {
-        const [y,m,d] = k.split('-');
-        return { date: `${d}/${m}`, total: v };
-    });
-
-    return { totalSales, totalCost, margin, marginPercent: totalSales > 0 ? (margin/totalSales)*100 : 0, productRanking, clientRanking, timelineData };
-  }, [transactions, reportStartDate, reportEndDate]);
 
   if (!user && loading) return <div className="flex h-screen items-center justify-center bg-stone-100 text-orange-600">Iniciando...</div>;
 
@@ -1488,71 +1506,20 @@ export default function PosApp() {
 
       <header className={`${view === 'purchases' ? 'bg-stone-800' : view === 'receipts' ? 'bg-stone-700' : view === 'finances' ? 'bg-emerald-700' : 'bg-orange-500'} text-white p-2 shadow-md flex justify-between items-center z-10 shrink-0`}>
         <h1 className="font-bold text-base flex items-center gap-2">
-            {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'inventory' ? <Package className="w-5 h-5"/> : view === 'finances' ? <DollarSign className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
+            {view === 'pos' ? <Leaf className="w-5 h-5"/> : view === 'purchases' ? <ShoppingBag className="w-5 h-5"/> : view === 'finances' ? <DollarSign className="w-5 h-5"/> : <LayoutDashboard className="w-5 h-5"/>} 
             {getHeaderTitle()}
         </h1>
+        {/* Quick Actions (e.g. Add Product) only in Purchases */}
+        {view === 'purchases' && purchasesSubView === 'catalog' && (
+             <button onClick={() => { setEditingProduct(null); setProductPriceInput(''); setIsProductModalOpen(true); }} className="p-1.5 bg-white/20 rounded-full hover:bg-white/30"><Plus className="w-5 h-5"/></button>
+        )}
       </header>
 
       <main className={`flex-1 overflow-hidden relative flex flex-col ${view !== 'pos' && view !== 'purchases' ? 'overflow-y-auto' : ''}`}>
         
         {(view === 'pos') && (
             <div className="flex flex-col h-full relative">
-                {/* SALES MODE SELECTOR OVERLAY */}
-                {salesMode === null && (
-                    <div className="absolute inset-0 z-20 bg-stone-50 flex flex-col p-6 animate-in fade-in duration-300">
-                        <div className="mb-8 text-center">
-                            <h2 className="text-2xl font-black text-stone-800 mb-2">Nueva Venta</h2>
-                            <p className="text-stone-500">¿Qué tipo de transacción deseas realizar?</p>
-                        </div>
-                        
-                        <div className="flex flex-col gap-4 max-w-md w-full mx-auto">
-                            <button onClick={() => setSalesMode('stock')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-transparent hover:border-orange-500 flex items-center gap-4 group transition-all">
-                                <div className="p-3 bg-orange-100 text-orange-600 rounded-xl group-hover:bg-orange-600 group-hover:text-white transition-colors">
-                                    <ShoppingBag className="w-8 h-8"/>
-                                </div>
-                                <div className="text-left">
-                                    <h3 className="font-bold text-lg text-stone-800">Venta Stock / Web</h3>
-                                    <p className="text-xs text-stone-400">Venta inmediata de productos existentes o compra web directa.</p>
-                                </div>
-                            </button>
-
-                            <button onClick={() => {
-                                const activeCycle = cycles.find(c => c.status === 'open');
-                                if(!activeCycle) { triggerAlert("Sin Ciclo", "No hay ciclo activo para agregar pedidos.", "info"); return; }
-                                setSalesMode('cycle');
-                            }} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 flex items-center gap-4 group transition-all">
-                                <div className="p-3 bg-blue-100 text-blue-600 rounded-xl group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                                    <Repeat className="w-8 h-8"/>
-                                </div>
-                                <div className="text-left">
-                                    <h3 className="font-bold text-lg text-stone-800">Agregar al Ciclo</h3>
-                                    <p className="text-xs text-stone-400">Sumar puntos a la meta del ciclo actual (Encargo).</p>
-                                </div>
-                            </button>
-
-                            <button onClick={() => setSalesMode('exchange')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-transparent hover:border-purple-500 flex items-center gap-4 group transition-all">
-                                <div className="p-3 bg-purple-100 text-purple-600 rounded-xl group-hover:bg-purple-600 group-hover:text-white transition-colors">
-                                    <ArrowRight className="w-8 h-8"/>
-                                </div>
-                                <div className="text-left">
-                                    <h3 className="font-bold text-lg text-stone-800">Intercambio</h3>
-                                    <p className="text-xs text-stone-400">Productos conseguidos con otras consultoras.</p>
-                                </div>
-                            </button>
-                        </div>
-                    </div>
-                )}
-
                 <div className="p-2 bg-white border-b shadow-sm space-y-2">
-                    {salesMode && (
-                        <div className={`px-3 py-2 rounded-lg text-sm font-bold flex justify-between items-center ${salesMode === 'cycle' ? 'bg-blue-50 text-blue-700' : salesMode === 'exchange' ? 'bg-purple-50 text-purple-700' : 'bg-orange-50 text-orange-700'}`}>
-                            <span className="flex items-center gap-2">
-                                {salesMode === 'cycle' ? <Repeat className="w-4 h-4"/> : salesMode === 'exchange' ? <ArrowRight className="w-4 h-4"/> : <ShoppingBag className="w-4 h-4"/>}
-                                Modo: {salesMode === 'cycle' ? `Ciclo ${cycles.find(c => c.status === 'open')?.name || '...'}` : salesMode === 'exchange' ? 'Intercambio' : 'Venta Stock'}
-                            </span>
-                            <button onClick={() => { setSalesMode(null); clearCart(); }} className="text-xs underline opacity-80">Cambiar</button>
-                        </div>
-                    )}
                     <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
                     <div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div>
                 </div>
@@ -1562,7 +1529,7 @@ export default function PosApp() {
                             <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col h-full group hover:shadow-md transition-all text-left">
                                 <div className="aspect-square w-full relative">
                                     {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}
-                                    {p.stock <= 0 && <div className="absolute inset-0 bg-black/10 flex items-end justify-center p-1"><span className="text-[10px] font-bold bg-red-500 text-white px-2 rounded">Sin Stock</span></div>}
+                                    {p.stock <= 0 && <div className="absolute inset-0 bg-black/10 flex items-end justify-center p-1"><span className="text-[10px] font-bold bg-amber-500 text-white px-2 rounded">Por Encargo</span></div>}
                                 </div>
                                 <div className="p-2 flex flex-col flex-1 justify-between">
                                     <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
@@ -1597,28 +1564,11 @@ export default function PosApp() {
                                                 </div>
                                                 
                                                 <div className="flex-1 flex flex-col items-end gap-1">
-                                                    {/* TOGGLE FOR MAGAZINE PRICE (STOCK & CYCLE) */}
-                                                    <div className="flex bg-stone-100 p-0.5 rounded-lg">
-                                                        <button 
-                                                            onClick={() => toggleMagazinePrice(item.id)} 
-                                                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all ${!item.isMagazinePrice ? 'bg-white shadow text-stone-800' : 'text-stone-400'}`}
-                                                        >
-                                                            Actual
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => toggleMagazinePrice(item.id)}
-                                                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all ${item.isMagazinePrice ? 'bg-white shadow text-blue-600' : 'text-stone-400'}`}
-                                                        >
-                                                            Revista
-                                                        </button>
-                                                    </div>
-                                                    
                                                     <MoneyInput 
                                                         className={`w-24 border-b text-sm font-bold text-right outline-none bg-transparent ${item.isMagazinePrice ? 'border-blue-300 text-blue-600' : 'border-stone-300 text-stone-800'}`} 
                                                         value={item.transactionPrice === 0 ? '' : item.transactionPrice} 
                                                         placeholder="Precio" 
                                                         onChange={val => updateTransactionPrice(item.id, val || 0)}
-                                                        disabled={!item.isMagazinePrice} 
                                                     />
                                                 </div>
                                             </div>
@@ -1692,9 +1642,10 @@ export default function PosApp() {
                                 onClick={() => {
                                     clearCart();
                                     setSelectedCycle(activeCycle.id);
-                                    setSelectedSupplier('Para Inversión'); // Use correct client for investment
-                                    setOrderSource('cycle_stock'); // Mark as coming from cycle
-                                    setView('purchases'); // Go to purchases
+                                    setSelectedSupplier('Para Inversión'); 
+                                    setOrderSource('cycle_stock'); 
+                                    setView('purchases');
+                                    setPurchasesSubView('orders'); // Go to orders tab
                                 }}
                                 className="w-full mt-6 py-3 bg-purple-600 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"
                             >
@@ -1703,7 +1654,7 @@ export default function PosApp() {
                             </button>
                         </div>
 
-                        {/* Lista de Pedidos en Ciclo - Restaurada a estilo moderno */}
+                        {/* Lista de Pedidos en Ciclo */}
                         <div>
                             <div className="flex justify-between items-center mb-4 ml-1">
                                 <h3 className="font-bold text-stone-700 text-lg">Detalle del Ciclo</h3>
@@ -1807,9 +1758,11 @@ export default function PosApp() {
         )}
 
         {view === 'purchases' && (
-            <div className="flex flex-col h-full">
+            <div className="flex flex-col h-full bg-stone-50">
+                
+                {/* CHECK-IN OVERLAY (If processing order arrival) */}
                 {checkInOrder ? (
-                    <div className="flex flex-col h-full bg-white animate-in slide-in-from-bottom duration-300">
+                    <div className="flex flex-col h-full bg-white animate-in slide-in-from-bottom duration-300 z-20 absolute inset-0">
                         <div className="p-4 border-b bg-amber-50 flex justify-between items-center">
                             <div><h2 className="font-bold text-amber-800">Confirmar Llegada</h2><p className="text-xs text-amber-600">Ingresa vencimiento por unidad</p></div>
                             <button onClick={() => {setCheckInOrder(null); setCheckInItems([]);}} className="text-stone-400"><X/></button>
@@ -1825,12 +1778,22 @@ export default function PosApp() {
                         <div className="p-4 border-t bg-white pb-24"><button onClick={confirmCheckIn} className="w-full py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg shadow-green-200">Confirmar e Ingresar Stock</button></div>
                     </div>
                 ) : (
-                    !orderSource ? (
-                        <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-24">
-                            <div className="grid grid-cols-2 gap-4"><button onClick={() => setOrderSource('selection')} className="col-span-2 bg-stone-800 text-white p-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"><Plus className="w-6 h-6"/> <span className="font-bold text-lg">Nuevo Pedido</span></button></div>
-                            <div>
-                                <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-500"/> Por Llegar</h3>
-                                <div className="space-y-3">{pendingArrivals.length === 0 && <div className="text-center text-sm text-stone-400 py-4 border-2 border-dashed rounded-xl">No hay pedidos pendientes</div>}{pendingArrivals.map(order => (<div key={order.id} onClick={() => startCheckIn(order)} className="bg-white border border-l-4 border-l-amber-500 p-4 rounded-xl shadow-sm cursor-pointer hover:bg-amber-50 transition-colors relative overflow-hidden">
+                    <>
+                    {/* TABS HEADER FOR PURCHASES */}
+                    <div className="p-4 pb-0 bg-stone-800">
+                        <div className="flex p-1 bg-stone-700 rounded-xl mb-4">
+                            <button onClick={() => setPurchasesSubView('orders')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${purchasesSubView === 'orders' ? 'bg-white text-stone-800 shadow' : 'text-stone-400'}`}>📦 Recepción</button>
+                            <button onClick={() => setPurchasesSubView('catalog')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${purchasesSubView === 'catalog' ? 'bg-white text-stone-800 shadow' : 'text-stone-400'}`}>🏷️ Catálogo</button>
+                        </div>
+                    </div>
+
+                    {purchasesSubView === 'orders' ? (
+                        !orderSource ? (
+                            <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-24">
+                                <div className="grid grid-cols-2 gap-4"><button onClick={() => setOrderSource('selection')} className="col-span-2 bg-stone-800 text-white p-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"><Plus className="w-6 h-6"/> <span className="font-bold text-lg">Nuevo Pedido</span></button></div>
+                                <div>
+                                    <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-500"/> Por Llegar</h3>
+                                    <div className="space-y-3">{pendingArrivals.length === 0 && <div className="text-center text-sm text-stone-400 py-4 border-2 border-dashed rounded-xl">No hay pedidos pendientes</div>}{pendingArrivals.map(order => (<div key={order.id} onClick={() => startCheckIn(order)} className="bg-white border border-l-4 border-l-amber-500 p-4 rounded-xl shadow-sm cursor-pointer hover:bg-amber-50 transition-colors relative overflow-hidden">
                                             {/* ETIQUETAS INTELIGENTES DE ORIGEN */}
                                             {order.orderType === 'web' && (
                                                 <div className="absolute right-0 top-0 bg-blue-100 text-blue-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase">Compra Web #{order.displayId}</div>
@@ -1847,67 +1810,66 @@ export default function PosApp() {
                                             <div className="text-xs text-stone-500 flex gap-3"><span className="flex items-center gap-1"><Calendar className="w-3 h-3"/> {formatDateSimple(order.date.seconds)}</span><span className="flex items-center gap-1"><Box className="w-3 h-3"/> {(order.items || []).length} prod.</span></div>
                                         </div>
                                     ))}
+                                    </div>
                                 </div>
+                                <div><h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Compras</h3><div className="space-y-2">{purchaseHistoryData.slice(0, 10).map(h => (<div key={h.id} className="bg-stone-50 p-3 rounded-xl flex justify-between items-center opacity-70 cursor-pointer" onClick={() => setReceiptDetails(h)}><div><div className="font-bold text-stone-700">${formatMoney(h.total)}</div><div className="text-[10px] text-stone-400">{formatDateSimple(h.date.seconds)} • {h.clientId}</div></div><div className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold">RECIBIDO</div></div>))}</div></div>
                             </div>
-                            <div><h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><History className="w-5 h-5 text-stone-400"/> Historial Compras</h3><div className="space-y-2">{purchaseHistoryData.slice(0, 10).map(h => (<div key={h.id} className="bg-stone-50 p-3 rounded-xl flex justify-between items-center opacity-70 cursor-pointer" onClick={() => setReceiptDetails(h)}><div><div className="font-bold text-stone-700">${formatMoney(h.total)}</div><div className="text-[10px] text-stone-400">{formatDateSimple(h.date.seconds)} • {h.clientId}</div></div><div className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold">RECIBIDO</div></div>))}</div></div>
-                        </div>
+                        ) : (
+                            <div className="flex flex-col h-full bg-stone-50">
+                                {orderSource === 'selection' && (<div className="p-6 flex flex-col h-full"><div className="mb-6"><h2 className="text-2xl font-bold text-stone-800">¿Origen del Pedido?</h2></div><div className="grid grid-cols-1 gap-4 flex-1 content-start"><button onClick={() => setOrderSource('web')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 text-left group"><h3 className="font-bold text-lg">Compra Web</h3></button><button onClick={() => setOrderSource('catalog')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-pink-500 text-left group"><h3 className="font-bold text-lg">Catálogo</h3></button></div><button onClick={() => setOrderSource(null)} className="py-3 text-stone-400 font-bold">Cancelar</button></div>)}
+                                {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (<div className="p-6 flex flex-col h-full"><h2 className="text-2xl font-bold mb-6">Detalles</h2>{orderSource === 'web' ? (<div className="space-y-3">{WEB_SUPPLIERS.map(s => <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border rounded-xl font-bold text-left hover:bg-stone-50">{s}</button>)}</div>) : (<div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">{!catalogBrand ? (<div><label className="block font-bold text-sm mb-3">Marca</label><div className="grid grid-cols-2 gap-3">{BRANDS.map(b => <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>)}</div></div>) : (<><div><label className="block font-bold text-sm mb-2">Campaña</label><div className="flex gap-2"><select className="flex-1 p-3 border rounded-xl bg-stone-50" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}><option value="">Seleccionar...</option>{cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><button onClick={() => setIsCycleModalOpen(true)} className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center"><Plus/></button></div></div><button onClick={() => {if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona ciclo.", "info"); return; } setSelectedSupplier(`${catalogBrand} Catálogo`);}} className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl">Continuar</button></>)}</div>)}<button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button></div>)}
+                                
+                                {/* VISTA DE PRODUCTOS AL COMPRAR/AGREGAR AL CICLO */}
+                                {(selectedSupplier || orderSource === 'cycle_stock') && (
+                                    <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
+                                        <div className="p-2 bg-white border-b relative space-y-2">
+                                            {/* Header especial si venimos de Ciclos */}
+                                            {(orderSource === 'cycle_stock') && (
+                                                <div className="bg-purple-50 border border-purple-100 text-purple-800 px-3 py-2 rounded-lg text-sm font-bold flex justify-between items-center">
+                                                    <span>Agregando a {activeCycle?.name || 'Ciclo'} (Inversión)</span>
+                                                    <button onClick={() => { clearCart(); setView('cycles'); }} className="text-xs underline">Cancelar</button>
+                                                </div>
+                                            )}
+                                            <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div><div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div></div>
+                                        <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48"><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{filteredProducts.map(p => (<button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full"><div className="aspect-square w-full relative">{p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}</div><div className="p-2 flex flex-col flex-1 justify-between text-left w-full"><span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span><div className="mt-2 flex justify-between items-end w-full"><span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span><div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div></div></div></button>))}</div></div>
+                                        <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen ({cartPoints} pts)</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><MoneyInput className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={val => updateTransactionPrice(item.id, val || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
+                                    </div>
+                                )}
+                            </div>
+                        )
                     ) : (
-                        <div className="flex flex-col h-full bg-stone-50">
-                            {orderSource === 'selection' && (<div className="p-6 flex flex-col h-full"><div className="mb-6"><h2 className="text-2xl font-bold text-stone-800">¿Origen del Pedido?</h2></div><div className="grid grid-cols-1 gap-4 flex-1 content-start"><button onClick={() => setOrderSource('web')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-blue-500 text-left group"><h3 className="font-bold text-lg">Compra Web</h3></button><button onClick={() => setOrderSource('catalog')} className="p-6 bg-white rounded-2xl shadow-sm border-2 border-transparent hover:border-pink-500 text-left group"><h3 className="font-bold text-lg">Catálogo</h3></button></div><button onClick={() => setOrderSource(null)} className="py-3 text-stone-400 font-bold">Cancelar</button></div>)}
-                            {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (<div className="p-6 flex flex-col h-full"><h2 className="text-2xl font-bold mb-6">Detalles</h2>{orderSource === 'web' ? (<div className="space-y-3">{WEB_SUPPLIERS.map(s => <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border rounded-xl font-bold text-left hover:bg-stone-50">{s}</button>)}</div>) : (<div className="bg-white p-6 rounded-2xl shadow-sm space-y-6">{!catalogBrand ? (<div><label className="block font-bold text-sm mb-3">Marca</label><div className="grid grid-cols-2 gap-3">{BRANDS.map(b => <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border rounded-xl font-bold text-sm hover:bg-stone-50">{b}</button>)}</div></div>) : (<><div><label className="block font-bold text-sm mb-2">Campaña</label><div className="flex gap-2"><select className="flex-1 p-3 border rounded-xl bg-stone-50" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}><option value="">Seleccionar...</option>{cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><button onClick={() => setIsCycleModalOpen(true)} className="w-12 bg-stone-800 text-white rounded-xl flex items-center justify-center"><Plus/></button></div></div><button onClick={() => {if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona ciclo.", "info"); return; } setSelectedSupplier(`${catalogBrand} Catálogo`);}} className="w-full py-3 bg-stone-800 text-white font-bold rounded-xl">Continuar</button></>)}</div>)}<button onClick={() => setOrderSource('selection')} className="mt-auto py-3 text-stone-400 font-bold">Volver</button></div>)}
-                            
-                            {/* VISTA DE PRODUCTOS AL COMPRAR/AGREGAR AL CICLO */}
-                            {(selectedSupplier || orderSource === 'cycle_stock') && (
-                                <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
-                                    <div className="p-2 bg-white border-b relative space-y-2">
-                                        {/* Header especial si venimos de Ciclos */}
-                                        {(orderSource === 'cycle_stock') && (
-                                            <div className="bg-purple-50 border border-purple-100 text-purple-800 px-3 py-2 rounded-lg text-sm font-bold flex justify-between items-center">
-                                                <span>Agregando a {activeCycle?.name || 'Ciclo'} (Inversión)</span>
-                                                <button onClick={() => { clearCart(); setView('cycles'); }} className="text-xs underline">Cancelar</button>
+                        // CATALOG VIEW (Previously Inventory)
+                        <div className="p-4 overflow-y-auto pb-24 flex-1">
+                            <div className="flex justify-between mb-4 gap-2">
+                                <div className="flex-1 relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 rounded-xl border" placeholder="Buscar producto..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
+                                <button onClick={() => setIsCategoryModalOpen(true)} className="p-2 border rounded-xl"><Tag/></button>
+                                <button onClick={() => setShowCatalogModal(true)} className="p-2 bg-green-600 text-white rounded-xl"><Share2/></button>
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                                {filteredProducts.map(p => (
+                                    <div key={p.id} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all">
+                                        <div className="aspect-square w-full relative">
+                                            {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}
+                                        </div>
+                                        <div className="p-2 flex flex-col flex-1 justify-between text-left">
+                                            <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
+                                            <div className="mt-2 flex justify-between items-end">
+                                                <span className="text-orange-600 font-bold">${formatMoney(p.price)}</span>
+                                                <span className={`text-[10px] px-2 py-0.5 rounded-lg font-bold ${getStockStatus(p.stock).color}`}>{p.stock}</span>
                                             </div>
-                                        )}
-                                        <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 bg-stone-100 rounded-lg text-sm" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div><div className="flex gap-2 overflow-x-auto no-scrollbar"><button onClick={() => setSelectedCategoryFilter('ALL')} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === 'ALL' ? 'bg-orange-600 text-white' : 'bg-white'}`}>Todos</button>{categories.map(c => <button key={c.id} onClick={() => setSelectedCategoryFilter(c.id)} className={`px-3 py-1 rounded-full border text-xs whitespace-nowrap ${selectedCategoryFilter === c.id ? 'bg-orange-600 text-white' : 'bg-white'}`}>{c.name}</button>)}</div></div>
-                                    <div className="flex-1 overflow-y-auto p-2 bg-stone-100 pb-48"><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{filteredProducts.map(p => (<button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all h-full"><div className="aspect-square w-full relative">{p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}</div><div className="p-2 flex flex-col flex-1 justify-between text-left w-full"><span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span><div className="mt-2 flex justify-between items-end w-full"><span className="text-stone-400 text-[10px] font-medium">Stock: {p.stock}</span><div className="bg-stone-100 p-1.5 rounded-full"><Plus className="w-4 h-4 text-stone-600"/></div></div></div></button>))}</div></div>
-                                    <div className="fixed bottom-[60px] left-0 w-full z-20 bg-white rounded-t-2xl shadow-2xl border-t flex flex-col max-h-[50vh] min-h-0"><div className="px-4 py-3 border-b flex justify-between items-center bg-stone-50 rounded-t-2xl shrink-0"><div className="flex items-center gap-2"><ShoppingCart className="w-4 h-4 text-stone-700"/><span className="font-bold text-stone-800 text-sm">Resumen ({cartPoints} pts)</span></div><button onClick={() => { clearCart(); setOrderSource('selection'); setSelectedSupplier(''); }} className="p-1 bg-stone-200 rounded-full text-stone-500"><X className="w-4 h-4"/></button></div><div className="flex-1 overflow-y-auto p-3 min-h-0">{cart.map(item => (<div key={item.id} className="mb-3 border-b pb-2 last:border-0"><div className="flex justify-between items-start mb-1"><span className="text-xs font-bold line-clamp-1">{item.name}</span><button onClick={() => removeFromCart(item.id)} className="text-red-400"><X className="w-3 h-3"/></button></div><div className="flex gap-2 items-end"><div className="flex items-center bg-stone-100 rounded-lg h-7"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-5 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div><div className="flex-1"><MoneyInput className="w-full border-b border-stone-300 text-xs font-bold text-right outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo..." onChange={val => updateTransactionPrice(item.id, val || 0)}/></div><div className="w-16 text-right"><div className="font-bold text-xs">${formatMoney(item.transactionPrice * item.qty)}</div></div></div></div>))}</div><div className="p-3 border-t bg-white shrink-0"><button onClick={handleCreateOrder} className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg flex justify-between px-4 text-sm"><span>Guardar Pedido</span><span>${formatMoney(cartTotal)}</span></button></div></div>
-                                </div>
-                            )}
+                                            <div className="flex gap-2 mt-3 pt-2 border-t">
+                                                <button onClick={() => { setViewingHistoryProduct(p); setIsHistoryModalOpen(true); loadProductHistory(p.id); }} className="flex-1 py-1 bg-purple-50 text-purple-600 rounded flex justify-center"><ScrollText className="w-4 h-4"/></button>
+                                                <button onClick={() => { setEditingProduct(p); setProductPriceInput(p.price); setIsProductModalOpen(true); }} className="flex-1 py-1 bg-blue-50 text-blue-600 rounded flex justify-center"><Pencil className="w-4 h-4"/></button>
+                                                <button onClick={() => handleDeleteProduct(p.id)} className="flex-1 py-1 bg-red-50 text-red-600 rounded flex justify-center"><Trash2 className="w-4 h-4"/></button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
-                    )
+                    )}
+                    </>
                 )}
-            </div>
-        )}
-        
-        {/* INVENTORY */}
-        {view === 'inventory' && (
-            <div className="p-4 overflow-y-auto pb-24">
-                <div className="flex justify-between mb-4 gap-2">
-                    <div className="flex-1 relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-stone-400"/><input className="w-full pl-9 p-2 rounded-xl border" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/></div>
-                    <button onClick={() => setIsCategoryModalOpen(true)} className="p-2 border rounded-xl"><Tag/></button>
-                    <button onClick={() => setShowCatalogModal(true)} className="p-2 bg-green-600 text-white rounded-xl"><Share2/></button>
-                    <button onClick={() => { setEditingProduct(null); setProductPriceInput(''); setIsProductModalOpen(true); }} className="px-4 bg-orange-500 text-white rounded-xl font-bold flex items-center gap-2"><Plus className="w-4 h-4"/> Nuevo</button>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                    {filteredProducts.map(p => (
-                        <div key={p.id} className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col group hover:shadow-md transition-all">
-                            <div className="aspect-square w-full relative">
-                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-stone-200" />}
-                            </div>
-                            <div className="p-2 flex flex-col flex-1 justify-between text-left">
-                                <span className="font-bold text-sm line-clamp-2 leading-tight text-stone-700">{p.name}</span>
-                                <div className="mt-2 flex justify-between items-end">
-                                    <span className="text-orange-600 font-bold">${formatMoney(p.price)}</span>
-                                    <span className={`text-[10px] px-2 py-0.5 rounded-lg font-bold ${getStockStatus(p.stock).color}`}>{p.stock}</span>
-                                </div>
-                                <div className="flex gap-2 mt-3 pt-2 border-t">
-                                    <button onClick={() => { setViewingHistoryProduct(p); setIsHistoryModalOpen(true); loadProductHistory(p.id); }} className="flex-1 py-1 bg-purple-50 text-purple-600 rounded flex justify-center"><ScrollText className="w-4 h-4"/></button>
-                                    <button onClick={() => { setEditingProduct(p); setProductPriceInput(p.price); setIsProductModalOpen(true); }} className="flex-1 py-1 bg-blue-50 text-blue-600 rounded flex justify-center"><Pencil className="w-4 h-4"/></button>
-                                    <button onClick={() => handleDeleteProduct(p.id)} className="flex-1 py-1 bg-red-50 text-red-600 rounded flex justify-center"><Trash2 className="w-4 h-4"/></button>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
             </div>
         )}
         
@@ -1944,6 +1906,7 @@ export default function PosApp() {
                     <div className="space-y-3">
                         {filteredSales.pending_delivery.length === 0 && <div className="text-stone-400 text-sm text-center py-4">No hay pedidos por entregar.</div>}
                         {filteredSales.pending_delivery.map(t => {
+                            const tag = getOrderTag(t);
                             return (
                                 <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-green-500">
                                     <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
@@ -1953,7 +1916,12 @@ export default function PosApp() {
                                                 {formatDateSimple(t.date.seconds)}
                                             </span>
                                         </div>
-                                        <div className="flex justify-between items-center mb-2"><div className="text-xl font-black">${formatMoney(t.total)}</div><span className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold uppercase">Listo para Entrega</span></div>
+                                        <div className="flex justify-between items-center mb-2">
+                                            <div className="text-xl font-black">${formatMoney(t.total)}</div>
+                                            <span className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${tag.color} flex items-center gap-1`}>
+                                                <tag.icon className="w-3 h-3"/> {tag.label}
+                                            </span>
+                                        </div>
                                     </div>
                                     <div className="flex gap-2 pt-2 border-t">
                                         <button onClick={() => handleNotifyClient(t)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1"><MessageCircle className="w-4 h-4"/> Avisar</button>
@@ -1967,11 +1935,12 @@ export default function PosApp() {
                 </div>
 
                 <div className="mb-6">
-                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-amber-500"/> Por Encargar</h2>
+                    <h2 className="font-bold text-lg mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-amber-500"/> Por Encargar / Por Llegar</h2>
                     <div className="space-y-3">
-                        {/* Faltantes de Stock */}
-                        {filteredSales.pending_order.map(t => (
-                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-amber-500">
+                        {filteredSales.pending.filter(t => t.saleStatus !== 'pending_delivery').map(t => {
+                            const tag = getOrderTag(t);
+                            return (
+                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-stone-300">
                                 <div onClick={() => setReceiptDetails(t)} className="cursor-pointer">
                                     <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
                                         <span className="text-xs text-stone-400">
@@ -1981,55 +1950,17 @@ export default function PosApp() {
                                     </div>
                                     <div className="flex justify-between items-center mb-2">
                                         <div className="text-xl font-black">${formatMoney(t.total)}</div>
-                                        <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-1 rounded font-bold uppercase">Falta Stock</span>
+                                        <span className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${tag.color} flex items-center gap-1`}>
+                                            <tag.icon className="w-3 h-3"/> {tag.label}
+                                        </span>
                                     </div>
                                 </div>
                                 <div className="flex gap-2 pt-2 border-t">
-                                    <button onClick={() => handleDeliverOrder(t)} className="flex-1 py-2 bg-stone-200 text-stone-400 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-not-allowed" disabled><Clock className="w-4 h-4"/> Esperando Stock</button>
+                                    <button className="flex-1 py-2 bg-stone-100 text-stone-400 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-default"><Clock className="w-4 h-4"/> Esperando Stock</button>
                                     <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
                                 </div>
                             </div>
-                        ))}
-
-                        {/* Pedidos Web (Sin stock y no de ciclo) */}
-                        {filteredSales.pending_web.map(t => (
-                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-blue-500 relative overflow-hidden">
-                                <div className="absolute right-0 top-0 bg-blue-100 text-blue-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase flex items-center gap-1"><Globe2 className="w-3 h-3"/> Pedido Web</div>
-                                <div onClick={() => setReceiptDetails(t)} className="cursor-pointer pt-2">
-                                    <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
-                                        <span className="text-xs text-stone-400">
-                                            <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
-                                            {formatDateSimple(t.date.seconds)}
-                                        </span>
-                                    </div>
-                                    <div className="flex justify-between items-center mb-2">
-                                        <div className="text-xl font-black">${formatMoney(t.total)}</div>
-                                    </div>
-                                </div>
-                                <div className="flex gap-2 pt-2 border-t">
-                                    <button className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1" disabled><Clock className="w-4 h-4"/> Comprar en Web</button>
-                                    <button onClick={() => handleVoidTransaction(t)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-4 h-4"/></button>
-                                </div>
-                            </div>
-                        ))}
-
-                        {/* Pedidos Ciclo Pendientes (Solo informativos aqui, se gestionan en Ciclos) */}
-                         {filteredSales.pending_cycle.map(t => (
-                             <div key={t.id} className="p-4 bg-white rounded-xl shadow-sm border border-l-4 border-l-purple-500 relative overflow-hidden opacity-75">
-                                <div className="absolute right-0 top-0 bg-purple-100 text-purple-700 text-[9px] font-bold px-2 py-1 rounded-bl-xl uppercase flex items-center gap-1"><Repeat className="w-3 h-3"/> En Ciclo</div>
-                                <div onClick={() => setReceiptDetails(t)} className="cursor-pointer pt-2">
-                                    <div className="flex justify-between mb-2"><span className="font-bold text-stone-800">{getClientName(t.clientId)}</span>
-                                        <span className="text-xs text-stone-400">
-                                            <span className="font-mono font-bold text-stone-500 mr-2">#{t.displayId}</span>
-                                            {formatDateSimple(t.date.seconds)}
-                                        </span>
-                                    </div>
-                                    <div className="flex justify-between items-center mb-2">
-                                        <div className="text-xl font-black">${formatMoney(t.total)}</div>
-                                    </div>
-                                </div>
-                            </div>
-                        ))}
+                        )})}
                     </div>
                 </div>
 
@@ -2043,55 +1974,6 @@ export default function PosApp() {
                         </span>
                         </div><div className="flex justify-between"><div className="font-bold">${formatMoney(t.total)}</div><div className="text-xs text-green-600 font-bold">ENTREGADO</div></div></div>))}
                     </div>
-                </div>
-            </div>
-        )}
-
-        {view === 'reports' && (
-            <div className="p-4 space-y-6 pb-24">
-                <div className="flex justify-between items-center mb-2">
-                  <h3 className="font-bold text-xl text-stone-800">Consultora de Belleza Helen Quintana</h3>
-                  <div className="flex gap-2">
-                    <button onClick={() => setShowStockAlertModal(true)} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-bold flex gap-2 items-center shadow-md"><Package className="w-4 h-4 text-orange-500"/> Stock</button>
-                    <button onClick={() => setShowExpiringModal(true)} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-bold flex gap-2 items-center shadow-md"><CalendarX className="w-4 h-4 text-red-500"/> Vence</button>
-                    <button onClick={() => setShowPendingOrdersModal(true)} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-bold flex gap-2 items-center shadow-md"><ShoppingBag className="w-4 h-4 text-blue-400"/> Comprar</button>
-                  </div>
-                </div>
-                <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-                    {['today', 'yesterday', 'week', 'month'].map(f => (
-                        <button key={f} onClick={() => setQuickDate(f)} className="px-4 py-1.5 bg-white border border-stone-200 text-stone-600 rounded-full text-xs font-bold uppercase hover:bg-stone-50 active:bg-stone-100 transition-colors">{f === 'today' ? 'Hoy' : f === 'yesterday' ? 'Ayer' : f === 'week' ? 'Semana' : 'Mes'}</button>
-                    ))}
-                </div>
-                <div className="bg-white p-3 rounded-xl shadow-sm border border-stone-100 grid grid-cols-2 gap-3"><div><label className="text-[10px] text-stone-400 font-bold uppercase">Inicio</label><input type="date" className="w-full text-sm p-1 bg-stone-50 rounded border-0" value={reportStartDate} onChange={e => setReportStartDate(e.target.value)} /></div><div><label className="text-[10px] text-stone-400 font-bold uppercase">Fin</label><input type="date" className="w-full text-sm p-1 bg-stone-50 rounded border-0" value={reportEndDate} onChange={e => setReportEndDate(e.target.value)} /></div></div>
-                <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-orange-500 flex flex-col justify-between h-28"><div className="flex justify-between items-start"><div className="text-xs font-bold text-stone-400 uppercase tracking-wide">Ventas Netas</div><div className="p-1.5 bg-orange-50 rounded-lg"><Wallet className="w-5 h-5 text-orange-600"/></div></div><div className="text-2xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.totalSales)}</div></div>
-                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-stone-500 flex flex-col justify-between h-28"><div className="flex justify-between items-start"><div className="text-xs font-bold text-stone-400 uppercase tracking-wide">Costo (FIFO)</div><div className="p-1.5 bg-stone-50 rounded-lg"><TrendingDown className="w-5 h-5 text-stone-600"/></div></div><div className="text-2xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.totalCost)}</div></div>
-                    <div className="bg-white p-4 rounded-xl shadow-lg border border-stone-200 col-span-2 flex justify-between items-center h-24 relative overflow-hidden"><div className="relative z-10"><div className="text-xs font-bold text-stone-500 uppercase tracking-wide mb-1">Margen Real</div><div className="text-4xl font-black text-stone-800 tracking-tight">${formatMoney(reportData.margin)}</div></div><div className="relative z-10 flex flex-col items-end"><div className="bg-green-100 text-green-700 px-3 py-1 rounded-lg font-bold text-lg border border-green-200">{reportData.marginPercent.toFixed(1)}%</div></div><div className="absolute right-0 bottom-0 opacity-5"><TrendingUp className="w-32 h-32 text-stone-800"/></div></div>
-                </div>
-                <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100"><h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><BarChart3 className="w-4 h-4 text-stone-400"/> Tendencia Diaria</h3><div className="flex items-end gap-2 h-32 pb-2 border-b border-stone-100">{reportData.timelineData.length === 0 ? <div className="w-full text-center text-xs text-stone-300 self-center">Sin datos en este periodo</div> : reportData.timelineData.map((d, i) => { const maxVal = Math.max(...reportData.timelineData.map(x => x.total)); const heightPct = maxVal > 0 ? (d.total / maxVal) * 100 : 0; return (<div key={i} className="flex-1 h-full flex flex-col items-center justify-end gap-1 group relative"><div className="w-full flex-1 flex items-end justify-center relative"><div className="w-full bg-orange-500 rounded-t-sm relative hover:bg-orange-600 transition-colors" style={{height: `${Math.max(heightPct, 5)}%`}}><div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-stone-800 text-white text-[10px] p-1 rounded whitespace-nowrap z-10 pointer-events-none">${formatMoney(d.total)}</div></div></div><div className="text-[9px] text-stone-400 font-medium whitespace-nowrap">{d.date}</div></div>)})}</div></div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100"><h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><Package className="w-4 h-4 text-stone-400"/> Top Productos</h3><div className="space-y-3">{reportData.productRanking.length === 0 && <div className="text-xs text-stone-400 text-center py-4">Sin ventas</div>}{reportData.productRanking.map((p,i) => (<div key={i} className="flex justify-between items-center text-sm border-b border-stone-50 last:border-0 pb-2"><div className="flex items-center gap-3"><div className="w-6 h-6 rounded-full bg-stone-100 flex items-center justify-center text-xs font-bold text-stone-500">{i + 1}</div><div className="font-medium text-stone-700 line-clamp-1">{p.name}</div></div><div className="text-right"><div className="font-bold text-stone-800">${formatMoney(p.revenue)}</div><div className="text-[10px] text-stone-400">{p.qty} un.</div></div></div>))}</div></div>
-                    <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100"><h3 className="font-bold text-stone-700 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide"><Users className="w-4 h-4 text-stone-400"/> Top Clientes</h3><div className="space-y-3">{reportData.clientRanking.length === 0 && <div className="text-xs text-stone-400 text-center py-4">Sin datos</div>}{reportData.clientRanking.map((c,i) => (<div key={i} className="flex justify-between items-center text-sm border-b border-stone-50 last:border-0 pb-2"><div className="flex items-center gap-3"><div className="w-6 h-6 rounded-full bg-stone-100 flex items-center justify-center text-xs font-bold text-stone-500">{i + 1}</div><div className="font-medium text-stone-700 line-clamp-1">{c.name}</div></div><div className="text-right"><div className="font-bold text-stone-800">${formatMoney(c.total)}</div><div className="text-[10px] text-stone-400">{c.count} compras</div></div></div>))}</div></div>
-                </div>
-            </div>
-        )}
-
-        {view === 'clients' && (
-            <div className="p-4 pb-24 overflow-y-auto">
-                <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); }} className="w-full py-3 bg-orange-600 text-white font-bold rounded-xl mb-4 shadow-lg flex items-center justify-center gap-2"><Plus className="w-5 h-5"/> Crear Nuevo Cliente</button>
-                <div className="space-y-2">
-                    {clients.map(c => (
-                        <div key={c.id} className="p-4 bg-white rounded-xl shadow-sm border flex justify-between items-center group">
-                            <div>
-                                <div className="font-bold text-stone-800">{c.name}</div>
-                                <div className="text-sm text-stone-500 flex items-center gap-1"><Smartphone className="w-3 h-3"/> {c.phone || 'Sin teléfono'}</div>
-                            </div>
-                            <div className="flex gap-2 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => { setEditingClient(c); setIsClientModalOpen(true); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Pencil className="w-4 h-4"/></button>
-                                <button onClick={() => handleDeleteClient(c.id)} className="p-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100"><Trash2 className="w-4 h-4"/></button>
-                            </div>
-                        </div>
-                    ))}
                 </div>
             </div>
         )}
@@ -2140,6 +2022,8 @@ export default function PosApp() {
                           <div className="flex items-center gap-2 mb-3">
                               <div className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold">1</div>
                               <h3 className="font-bold text-stone-700 text-sm uppercase tracking-wide">Cliente</h3>
+                              {/* Create Client Shortcut Inside Modal */}
+                              <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); }} className="ml-auto text-xs bg-stone-100 px-2 py-1 rounded font-bold text-stone-500 hover:bg-stone-200">+ Nuevo</button>
                           </div>
                           <div className="relative" ref={clientInputRef}>
                               <div className="relative">
@@ -2159,7 +2043,7 @@ export default function PosApp() {
                               </div>
                               {showClientOptions && (
                                   <div className="absolute top-full left-0 w-full bg-white border border-stone-100 rounded-xl shadow-xl max-h-48 overflow-y-auto z-20 mt-2 p-2">
-                                      <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); setShowClientOptions(false); }} className="w-full p-3 text-left text-blue-600 font-bold hover:bg-blue-50 rounded-lg flex items-center gap-2"><Plus className="w-4 h-4"/> Crear Nuevo Cliente</button>
+                                      {filteredClientsForSearch.length === 0 && <div className="p-3 text-stone-400 text-xs text-center">No se encontraron clientes</div>}
                                       {filteredClientsForSearch.map(c => (
                                           <div key={c.id} className="p-3 hover:bg-stone-50 cursor-pointer rounded-lg transition-colors flex justify-between items-center group" onClick={() => {
                                               setSelectedClient(c.id);
@@ -2191,29 +2075,48 @@ export default function PosApp() {
                                     </div>
                                     <div className="flex-1">
                                         <h4 className={`font-bold text-base mb-1 ${stockAnalysis.canDeliverAll ? 'text-emerald-900' : 'text-amber-900'}`}>
-                                            {stockAnalysis.canDeliverAll ? 'Stock Disponible' : 'Falta Stock'}
+                                            {stockAnalysis.canDeliverAll ? 'Stock Disponible' : 'Faltan Productos'}
                                         </h4>
                                         <p className={`text-xs font-medium leading-relaxed ${stockAnalysis.canDeliverAll ? 'text-emerald-700' : 'text-amber-700'}`}>
                                             {stockAnalysis.canDeliverAll 
-                                                ? 'Se descontará del inventario y pasará a "Por Entregar".' 
-                                                : 'Se registrará como pendiente de llegada "Por Encargar".'}
+                                                ? 'Se descontará del inventario para entrega inmediata.' 
+                                                : 'Algunos productos no están en stock y se deben encargar.'}
                                         </p>
                                     </div>
                                 </div>
 
                                 {!stockAnalysis.canDeliverAll && (
                                     <div className="mt-4 bg-white rounded-xl border border-amber-100 p-3 shadow-sm">
-                                            <div className="text-[10px] font-bold text-amber-400 uppercase mb-2 tracking-wider">Productos Faltantes</div>
-                                            <div className="space-y-2 max-h-32 overflow-y-auto custom-scrollbar pr-1">
-                                                {stockAnalysis.missing.map(i => (
-                                                    <div key={i.id} className="flex justify-between items-center p-2 bg-amber-50/50 rounded-lg">
-                                                        <div className="flex items-center gap-2 overflow-hidden">
-                                                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></div>
-                                                            <span className="text-xs font-bold text-stone-700 truncate">{i.name}</span>
+                                            <div className="text-[10px] font-bold text-amber-400 uppercase mb-2 tracking-wider">Productos a Pedir (Seleccionar Tipo)</div>
+                                            <div className="space-y-3 max-h-48 overflow-y-auto custom-scrollbar pr-1 mb-2">
+                                                {stockAnalysis.missing.map(i => {
+                                                    const currentAction = itemActions[i.id] || 'cycle';
+                                                    return (
+                                                        <div key={i.id} className="flex flex-col gap-2 p-2 bg-amber-50/50 rounded-lg border border-amber-100">
+                                                            <div className="flex justify-between items-center">
+                                                                <div className="flex items-center gap-2 overflow-hidden">
+                                                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></div>
+                                                                    <span className="text-xs font-bold text-stone-700 truncate">{i.name}</span>
+                                                                </div>
+                                                                <span className="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded ml-2 whitespace-nowrap">Faltan {i.qty - i.currentStock}</span>
+                                                            </div>
+                                                            <div className="flex bg-white rounded-lg p-1 shadow-sm">
+                                                                <button 
+                                                                    onClick={() => setItemActions(prev => ({...prev, [i.id]: 'cycle'}))}
+                                                                    className={`flex-1 py-1 text-[10px] font-bold rounded flex items-center justify-center gap-1 transition-colors ${currentAction === 'cycle' ? 'bg-purple-100 text-purple-700' : 'text-stone-400 hover:bg-stone-50'}`}
+                                                                >
+                                                                    <Repeat className="w-3 h-3"/> Ciclo
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => setItemActions(prev => ({...prev, [i.id]: 'express'}))}
+                                                                    className={`flex-1 py-1 text-[10px] font-bold rounded flex items-center justify-center gap-1 transition-colors ${currentAction === 'express' ? 'bg-amber-100 text-amber-700' : 'text-stone-400 hover:bg-stone-50'}`}
+                                                                >
+                                                                    <Zap className="w-3 h-3"/> Express
+                                                                </button>
+                                                            </div>
                                                         </div>
-                                                        <span className="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded ml-2 whitespace-nowrap">Faltan {i.qty - i.currentStock}</span>
-                                                    </div>
-                                                ))}
+                                                    );
+                                                })}
                                             </div>
                                     </div>
                                 )}
@@ -2343,7 +2246,7 @@ export default function PosApp() {
                                               {item.type === 'cuota' ? `Cuota ${item.number}` : item.type === 'abono' ? 'Abono Inicial' : (item.type === 'total' ? 'Pago Total' : 'Saldo Pendiente')}
                                           </div>
                                           <div className="text-xs text-stone-500 mt-0.5">
-                                              {item.date ? new Date(item.date * 1000).toLocaleDateString() : 'Fecha abierta'}
+                                              {item.date ? new Date(item.date * 1000).toLocaleDateString() : ''}
                                           </div>
                                           {item.paymentHistory && item.paymentHistory.length > 0 && (
                                               <div className="text-[9px] text-stone-400 mt-1">
@@ -2431,6 +2334,31 @@ export default function PosApp() {
               </div>
           </div>
       )}
+      
+      {/* MODAL DE CONFIRMACIÓN DE ENTREGA - RESTAURADO */}
+      {confirmDeliveryModal.show && (
+        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl">
+                <h2 className="text-xl font-bold text-center mb-4">Confirmar Fecha Entrega</h2>
+                <p className="text-sm text-stone-500 text-center mb-6">Confirma la fecha real de entrega para cerrar la venta.</p>
+                
+                <div className="mb-6">
+                    <label className="block text-xs font-bold text-stone-500 uppercase mb-2">Fecha de Entrega</label>
+                    <input 
+                        type="date" 
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl font-bold text-stone-800 outline-none focus:border-stone-400"
+                        value={deliveryDateInput}
+                        onChange={(e) => setDeliveryDateInput(e.target.value)}
+                    />
+                </div>
+
+                <div className="flex gap-3">
+                    <button onClick={() => setConfirmDeliveryModal({ show: false, transaction: null })} className="flex-1 py-3 bg-stone-100 text-stone-500 rounded-xl font-bold">Cancelar</button>
+                    <button onClick={processDeliveryConfirmation} className="flex-1 py-3 bg-stone-900 text-white rounded-xl font-bold shadow-lg">Finalizar</button>
+                </div>
+            </div>
+        </div>
+      )}
 
       {isDeliveryModalOpen && deliveryTransaction && (
         <div className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4">
@@ -2454,97 +2382,10 @@ export default function PosApp() {
                     </div>
                 </div>
 
-                <div className="mb-6">
-                    <label className="text-xs font-bold text-stone-500 uppercase block mb-2">Medio de Pago (Estimado)</label>
-                    <div className="grid grid-cols-2 gap-3">
-                        <button onClick={() => setDeliveryPaymentMethod('Efectivo')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Efectivo' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Efectivo</button>
-                        <button onClick={() => setDeliveryPaymentMethod('Transferencia')} className={`p-3 border-2 rounded-xl font-bold ${deliveryPaymentMethod === 'Transferencia' ? 'border-green-500 text-green-700' : 'border-stone-200'}`}>Transf.</button>
-                    </div>
-                </div>
-
                 <button onClick={startDeliveryProcess} className={`w-full py-3 text-white font-bold rounded-xl ${selectedCourier === 'Yo (Directo)' ? 'bg-green-600' : 'bg-stone-800'}`}>
-                    {selectedCourier === 'Yo (Directo)' ? 'Confirmar y Cerrar Venta' : 'Enviar a Reparto (Descontar Stock)'}
+                    {selectedCourier === 'Yo (Directo)' ? 'Despachar' : 'Enviar a Reparto (Descontar Stock)'}
                 </button>
                 <button onClick={() => setIsDeliveryModalOpen(false)} className="w-full mt-2 py-3 text-stone-400">Cancelar</button>
-            </div>
-        </div>
-      )}
-
-      {showExpiringModal && (
-        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
-                <div className="p-4 border-b flex justify-between items-center bg-red-50">
-                    <h2 className="font-bold text-lg text-red-700 flex items-center gap-2"><CalendarX className="w-5 h-5"/> Por Vencer (Top 10)</h2>
-                    <button onClick={() => setShowExpiringModal(false)}><X className="w-6 h-6 text-red-400"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4">
-                    {expiringProducts.length === 0 ? (
-                        <div className="text-center text-stone-400 py-10">No hay productos próximos a vencer.</div>
-                    ) : (
-                        <div className="space-y-3">
-                            {expiringProducts.map((b, i) => (
-                                <div key={i} className="p-3 bg-white border border-red-100 rounded-xl shadow-sm">
-                                    <div className="font-bold text-stone-800 mb-1">{b.productName}</div>
-                                    <div className="flex justify-between text-xs text-stone-500 mb-2">
-                                        <span>Vence: <span className="font-bold text-red-600">{new Date(b.expirationDate).toLocaleDateString()}</span></span>
-                                        <span>{b.remainingQty} un.</span>
-                                    </div>
-                                    <div className="text-xs text-stone-400 bg-stone-50 p-2 rounded flex justify-between">
-                                        <span>Dinero en riesgo:</span>
-                                        <span className="font-bold text-stone-700">${formatMoney(b.remainingQty * b.cost)}</span>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-      )}
-
-      {showStockAlertModal && (
-          <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
-                  <div className="p-4 border-b bg-stone-50 flex justify-between items-center">
-                      <h2 className="font-bold text-lg flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-orange-500"/> Alerta de Stock</h2>
-                      <button onClick={() => setShowStockAlertModal(false)}><X className="w-5 h-5 text-stone-400"/></button>
-                  </div>
-                  <div className="p-6 text-center">
-                      <p className="text-stone-600 mb-4">¿Deseas generar un reporte de los productos con stock bajo?</p>
-                      <div className="space-y-3">
-                          <button onClick={() => handleSendStockReport(reportPhones.phone1)} className="w-full py-3 bg-green-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"><MessageCircle className="w-5 h-5"/> Enviar a WhatsApp (Principal)</button>
-                      </div>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {showPendingOrdersModal && (
-        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[80vh] flex flex-col overflow-hidden">
-                <div className="p-4 border-b flex justify-between items-center bg-blue-50">
-                    <h2 className="font-bold text-lg text-blue-700 flex items-center gap-2"><ShoppingBag className="w-5 h-5"/> Unidades por Comprar</h2>
-                    <button onClick={() => setShowPendingOrdersModal(false)}><X className="w-6 h-6 text-blue-400"/></button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                    {Object.keys(pendingOrdersData).length === 0 ? (
-                        <div className="text-center text-stone-400 py-10">No hay pedidos pendientes.</div>
-                    ) : (
-                        Object.entries(pendingOrdersData).map(([brand, items]) => (
-                            <div key={brand}>
-                                <h3 className="font-bold text-stone-400 text-xs uppercase mb-2 border-b pb-1">{brand}</h3>
-                                <div className="space-y-2">
-                                    {items.map((item, idx) => (
-                                        <div key={idx} className="flex justify-between items-center text-sm p-2 bg-stone-50 rounded-lg">
-                                            <span className="font-medium text-stone-700">{item.name}</span>
-                                            <span className="font-bold bg-white px-2 py-1 rounded border border-stone-200 text-stone-600">{item.qty} un.</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        ))
-                    )}
-                </div>
             </div>
         </div>
       )}
@@ -2643,36 +2484,28 @@ export default function PosApp() {
           </div>
       )}
 
-      {showPreTicket && (
-          <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
-              <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
-                  <h2 className="text-lg font-bold mb-2">Compartir Detalle</h2>
-                  <p className="text-sm text-stone-500 mb-4">Se copiará al portapapeles o abrirá WhatsApp.</p>
-                  <div className="bg-stone-100 p-3 rounded-lg text-xs font-mono mb-4 max-h-40 overflow-y-auto">
-                      {(cart || []).map(i => `${i.name} x${i.qty} ($${formatMoney(i.price)})`).join('\n')}
-                      {'\n'}Total: ${formatMoney(cartTotal)}
-                  </div>
-                  <div className="flex gap-2">
-                      <button onClick={() => {
-                          const text = `Hola! Aquí el detalle:\n${(cart || []).map(i => `- ${i.name} x${i.qty}`).join('\n')}\nTotal: $${formatMoney(cartTotal)}`;
-                          window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
-                          setShowPreTicket(false);
-                      }} className="flex-1 py-2 bg-green-500 text-white rounded-xl font-bold">WhatsApp</button>
-                      <button onClick={() => setShowPreTicket(false)} className="flex-1 py-2 bg-stone-200 rounded-xl">Cerrar</button>
-                  </div>
-              </div>
+      {isClientModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md">
+              <h2 className="text-xl font-bold mb-4">{editingClient ? 'Editar' : 'Nuevo'} Cliente</h2>
+              <form onSubmit={handleSaveClient} className="space-y-4">
+                <input name="name" required placeholder="Nombre Completo" defaultValue={editingClient?.name} className="w-full p-3 border rounded-xl" />
+                <input name="phone" placeholder="Teléfono" defaultValue={editingClient?.phone} className="w-full p-3 border rounded-xl" />
+                <input name="email" placeholder="Email (Opcional)" defaultValue={editingClient?.email} className="w-full p-3 border rounded-xl" />
+                <input name="department" placeholder="Departamento/Dirección" defaultValue={editingClient?.department} className="w-full p-3 border rounded-xl" />
+                <button className="w-full py-3 bg-stone-900 text-white rounded-xl font-bold">Guardar</button>
+                <button type="button" onClick={() => setIsClientModalOpen(false)} className="w-full py-3 bg-stone-100 rounded-xl">Cancelar</button>
+              </form>
+            </div>
           </div>
       )}
 
       <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 pb-safe-bottom z-30 shadow-lg">
-        <NavButton icon={<LayoutDashboard />} label="Reportes" active={view === 'reports'} onClick={() => setView('reports')} />
-        <NavButton icon={<Repeat />} label="Ciclos" active={view === 'cycles'} onClick={() => setView('cycles')} />
         <NavButton icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => setView('pos')} />
         <NavButton icon={<ShoppingBag />} label="Compras" active={view === 'purchases'} onClick={() => setView('purchases')} />
         <NavButton icon={<Receipt />} label="Pedidos" active={view === 'receipts'} onClick={() => setView('receipts')} />
+        <NavButton icon={<Repeat />} label="Ciclos" active={view === 'cycles'} onClick={() => setView('cycles')} />
         <NavButton icon={<DollarSign />} label="Deudores" active={view === 'finances'} onClick={() => setView('finances')} />
-        <NavButton icon={<Users />} label="Clientes" active={view === 'clients'} onClick={() => setView('clients')} />
-        <NavButton icon={<Package />} label="Stock" active={view === 'inventory'} onClick={() => setView('inventory')} />
       </nav>
     </div>
   );
