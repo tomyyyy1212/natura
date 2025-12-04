@@ -116,6 +116,7 @@ export default function PosApp() {
   const [viewingHistoryProduct, setViewingHistoryProduct] = useState(null);
   const [purchasesSubView, setPurchasesSubView] = useState('orders');
   const [viewingCycle, setViewingCycle] = useState(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const cycleMap = useMemo(() => cycles.reduce((acc, c) => ({ ...acc, [c.id]: c.name }), {}), [cycles]);
 
@@ -275,9 +276,8 @@ export default function PosApp() {
         }
         
         // 2. HANDLE MISSING (Backorder) -> Pending Order
-        // By default, missing items are assigned to 'cycle' type for future ordering
-        // The user removed the need to select origin here. It's decided later in Purchases module or default logic.
         for (let item of stockAnalysis.missing) {
+             // Missing items default to 'cycle' order type (Por Encargar)
              finalItems.push({ ...item, status: 'pending', orderType: 'cycle' }); 
         }
 
@@ -737,11 +737,45 @@ export default function PosApp() {
 
       {/* --- MOBILE HEADER --- */}
       <div className="md:hidden fixed top-0 w-full bg-[#1e4620] text-white z-40 px-4 py-3 flex justify-between items-center shadow-md">
-         <div className="flex items-center gap-2">
-             <Leaf className="w-6 h-6 text-[#d97706]" />
-             <span className="font-serif font-bold text-lg">{getHeaderTitle()}</span>
+         <div className="flex items-center gap-3">
+             <button onClick={() => setIsMobileMenuOpen(true)}><Menu className="w-6 h-6 text-white"/></button>
+             <div className="flex items-center gap-2">
+                <Leaf className="w-6 h-6 text-[#d97706]" />
+                <span className="font-serif font-bold text-lg">{getHeaderTitle()}</span>
+             </div>
          </div>
       </div>
+
+      {/* --- MOBILE MENU OVERLAY --- */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-50 bg-[#1e4620] text-white flex flex-col animate-in slide-in-from-left duration-300">
+            <div className="p-4 flex justify-between items-center border-b border-[#2d6130]">
+                <div className="flex items-center gap-2">
+                    <Leaf className="w-6 h-6 text-[#d97706]" />
+                    <span className="font-serif font-bold text-xl">Consultora</span>
+                </div>
+                <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 bg-white/10 rounded-full"><X className="w-6 h-6"/></button>
+            </div>
+            <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+                 <SidebarItem icon={<ShoppingCart />} label="Vender" active={view === 'pos'} onClick={() => { setView('pos'); setIsMobileMenuOpen(false); }} />
+                 <SidebarItem icon={<ShoppingBag />} label="Compras / Stock" active={view === 'purchases'} onClick={() => { setView('purchases'); setIsMobileMenuOpen(false); }} />
+                 <SidebarItem icon={<Receipt />} label="Pedidos" active={view === 'receipts'} onClick={() => { setView('receipts'); setIsMobileMenuOpen(false); }} />
+                 <SidebarItem icon={<Repeat />} label="Ciclos" active={view === 'cycles'} onClick={() => { setView('cycles'); setIsMobileMenuOpen(false); }} />
+                 <SidebarItem icon={<DollarSign />} label="Deudores" active={view === 'finances'} onClick={() => { setView('finances'); setIsMobileMenuOpen(false); }} />
+            </nav>
+            <div className="p-4 border-t border-[#2d6130] bg-[#153316]">
+              <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-[#d97706] flex items-center justify-center font-bold text-white shadow-md">
+                      {user?.isAnonymous ? 'A' : (user?.displayName?.[0] || 'C')}
+                  </div>
+                  <div className="overflow-hidden">
+                      <p className="font-bold text-sm truncate text-[#fdfbf7]">{user?.isAnonymous ? 'Modo Invitado' : (user?.displayName || 'Consultora')}</p>
+                      <p className="text-xs text-[#8da892] truncate">Natura & Avon</p>
+                  </div>
+              </div>
+            </div>
+        </div>
+      )}
 
       <main className={`flex-1 overflow-hidden relative flex flex-col ${view !== 'pos' && view !== 'purchases' ? 'overflow-y-auto' : ''} md:pt-0 pt-14`}>
         
@@ -890,71 +924,124 @@ export default function PosApp() {
                             </>
                         ) : (
                             <div className="flex flex-col h-full">
-                                <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
-                                    <div className="p-4 bg-white border-b border-[#e5e7eb] relative space-y-3 shadow-sm z-10">
-                                        <div className="bg-purple-50 border border-purple-100 text-purple-900 px-4 py-3 rounded-xl text-sm font-bold flex justify-between items-center shadow-inner">
-                                            <span>Creando Pedido de Abastecimiento</span>
-                                            <button onClick={() => { clearCart(); setOrderSource(null); }} className="text-xs underline opacity-70 hover:opacity-100">Cancelar</button>
+                                {/* Order Source Selection Logic */}
+                                {orderSource === 'selection' && (
+                                    <div className="flex flex-col h-full items-center justify-center space-y-6 py-10">
+                                        <h2 className="text-2xl font-serif font-bold text-[#1e4620]">¿Origen del Pedido?</h2>
+                                        <div className="w-full max-w-sm space-y-4">
+                                            <button onClick={() => setOrderSource('web')} className="w-full p-6 bg-white rounded-3xl shadow-lg border-2 border-transparent hover:border-[#1e4620] text-left group transition-all"><h3 className="font-bold text-xl text-[#1e4620] mb-1">Compra Web</h3><p className="text-sm text-stone-500">Pedidos directos desde la web.</p></button>
+                                            <button onClick={() => setOrderSource('catalog')} className="w-full p-6 bg-white rounded-3xl shadow-lg border-2 border-transparent hover:border-[#d97706] text-left group transition-all"><h3 className="font-bold text-xl text-[#1e4620] mb-1">Catálogo</h3><p className="text-sm text-stone-500">Pedidos de revista o campaña.</p></button>
                                         </div>
-                                        <div className="relative">
-                                            <Search className="absolute left-4 top-3.5 w-5 h-5 text-stone-400"/>
-                                            <input className="w-full pl-12 pr-4 py-3 bg-[#fdfbf7] border border-stone-200 rounded-2xl text-sm focus:outline-none focus:border-[#d97706] transition-colors" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
-                                        </div>
+                                        <button onClick={() => setOrderSource(null)} className="py-3 text-stone-400 font-bold hover:text-[#1e4620]">Cancelar</button>
                                     </div>
-                                    <div className="flex-1 overflow-y-auto p-4 bg-[#fdfbf7] pb-48">
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                                            {filteredProducts.map(p => (
-                                                <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-2xl shadow-sm border border-stone-100 overflow-hidden flex flex-col group hover:shadow-lg hover:border-[#d97706]/30 transition-all h-full text-left relative">
-                                                    <div className="aspect-square w-full relative bg-[#fdfbf7]">
-                                                        {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-[#d4dcd6]" />}
-                                                        <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm p-1.5 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"><Plus className="w-4 h-4 text-[#1e4620]"/></div>
-                                                    </div>
-                                                    <div className="p-3 flex flex-col flex-1 justify-between w-full">
-                                                        <span className="font-bold text-sm line-clamp-2 leading-snug text-[#1e4620]">{p.name}</span>
-                                                        <div className="mt-2 flex justify-between items-end w-full">
-                                                            <span className="text-stone-400 text-[10px] font-bold uppercase tracking-wider">Stock: {p.stock}</span>
-                                                            <span className="text-[#d97706] font-bold text-sm">${formatMoney(p.price)}</span>
+                                )}
+                                
+                                {(orderSource === 'web' || orderSource === 'catalog') && !selectedSupplier && (
+                                    <div className="flex flex-col h-full max-w-md mx-auto w-full py-6">
+                                        <h2 className="text-xl font-serif font-bold mb-6 text-[#1e4620]">Proveedor</h2>
+                                        {orderSource === 'web' ? (
+                                            <div className="space-y-3">
+                                                {WEB_SUPPLIERS.map(s => <button key={s} onClick={() => setSelectedSupplier(s)} className="w-full p-4 bg-white border border-stone-200 rounded-2xl font-bold text-left hover:border-[#1e4620] hover:shadow-md transition-all text-[#1e4620]">{s}</button>)}
+                                            </div>
+                                        ) : (
+                                            <div className="bg-white p-6 rounded-3xl shadow-sm border border-stone-100 space-y-6">
+                                                {!catalogBrand ? (
+                                                    <div>
+                                                        <label className="block font-bold text-xs text-stone-400 uppercase tracking-wider mb-3">Marca</label>
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            {BRANDS.map(b => <button key={b} onClick={() => setCatalogBrand(b)} className="p-3 border border-stone-200 rounded-xl font-bold text-sm hover:bg-[#fdfbf7] hover:border-[#1e4620] text-[#1e4620] transition-all">{b}</button>)}
                                                         </div>
                                                     </div>
-                                                </button>
-                                            ))}
-                                        </div>
+                                                ) : (
+                                                    <>
+                                                        <div>
+                                                            <label className="block font-bold text-xs text-stone-400 uppercase tracking-wider mb-2">Campaña</label>
+                                                            <div className="flex gap-2">
+                                                                <select className="flex-1 p-3 border border-stone-200 rounded-xl bg-[#fdfbf7] font-bold text-[#1e4620] outline-none focus:border-[#1e4620]" value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)}>
+                                                                    <option value="">Seleccionar...</option>
+                                                                    {cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                                                </select>
+                                                                <button onClick={() => setIsCycleModalOpen(true)} className="w-12 bg-[#1e4620] text-white rounded-xl flex items-center justify-center shadow-md"><Plus/></button>
+                                                            </div>
+                                                        </div>
+                                                        <button onClick={() => {if(!selectedCycle) { triggerAlert("Falta Ciclo", "Selecciona ciclo.", "info"); return; } setSelectedSupplier(`${catalogBrand} Catálogo`);}} className="w-full py-4 bg-[#1e4620] text-white font-bold rounded-2xl shadow-lg mt-4">Continuar</button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
+                                        <button onClick={() => setOrderSource('selection')} className="mt-auto py-4 text-stone-400 font-bold">Volver</button>
                                     </div>
-                                    <div className="fixed bottom-[70px] md:bottom-0 md:left-64 right-0 z-20 flex flex-col shadow-[0_-5px_20px_rgba(0,0,0,0.1)]">
-                                        <div className="rounded-t-3xl border-t border-[#e5e7eb] p-5 bg-white/95 backdrop-blur-md">
-                                            <div className="max-h-48 overflow-y-auto mb-3 space-y-3 pr-2 custom-scrollbar">
-                                                {cart.map(item => {
-                                                    const prod = products.find(p => p.id === item.id);
-                                                    const brand = prod?.brand || 'Natura';
-                                                    const activeCycle = cycles.find(c => c.status === 'open' && c.brand === brand);
-                                                    return (
-                                                        <div key={item.id} className="flex flex-col gap-2 border-b border-stone-100 pb-3 last:border-0">
-                                                            <div className="flex justify-between items-center">
-                                                                <div className="flex-1">
-                                                                    <div className="text-xs font-bold text-[#1e4620] line-clamp-1">{item.name}</div>
-                                                                    <div className="flex items-center gap-2 mt-1">
-                                                                        <div className="flex items-center bg-stone-100 rounded-lg h-6"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-4 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div>
+                                )}
+
+                                {(selectedSupplier || orderSource === 'cycle_stock') && (
+                                    <div className="flex flex-col h-full relative animate-in slide-in-from-right duration-200">
+                                        <div className="p-4 bg-white border-b border-[#e5e7eb] relative space-y-3 shadow-sm z-10">
+                                            <div className="bg-purple-50 border border-purple-100 text-purple-900 px-4 py-3 rounded-xl text-sm font-bold flex justify-between items-center shadow-inner">
+                                                <span>Agregando a Stock ({selectedSupplier || 'Inversión'})</span>
+                                                <button onClick={() => { clearCart(); if(orderSource==='cycle_stock') setView('cycles'); else setOrderSource(null); }} className="text-xs underline opacity-70 hover:opacity-100">Cancelar</button>
+                                            </div>
+                                            <div className="relative">
+                                                <Search className="absolute left-4 top-3.5 w-5 h-5 text-stone-400"/>
+                                                <input className="w-full pl-12 pr-4 py-3 bg-[#fdfbf7] border border-stone-200 rounded-2xl text-sm focus:outline-none focus:border-[#d97706] transition-colors" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
+                                            </div>
+                                        </div>
+                                        <div className="flex-1 overflow-y-auto p-4 bg-[#fdfbf7] pb-48">
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                                                {filteredProducts.map(p => (
+                                                    <button key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-2xl shadow-sm border border-stone-100 overflow-hidden flex flex-col group hover:shadow-lg hover:border-[#d97706]/30 transition-all h-full text-left relative">
+                                                        <div className="aspect-square w-full relative bg-[#fdfbf7]">
+                                                            {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Leaf className="w-full h-full p-8 text-[#d4dcd6]" />}
+                                                            <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm p-1.5 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"><Plus className="w-4 h-4 text-[#1e4620]"/></div>
+                                                        </div>
+                                                        <div className="p-3 flex flex-col flex-1 justify-between w-full">
+                                                            <span className="font-bold text-sm line-clamp-2 leading-snug text-[#1e4620]">{p.name}</span>
+                                                            <div className="mt-2 flex justify-between items-end w-full">
+                                                                <span className="text-stone-400 text-[10px] font-bold uppercase tracking-wider">Stock: {p.stock}</span>
+                                                                <span className="text-[#d97706] font-bold text-sm">${formatMoney(p.price)}</span>
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <div className="fixed bottom-[70px] md:bottom-0 md:left-64 right-0 z-20 flex flex-col shadow-[0_-5px_20px_rgba(0,0,0,0.1)]">
+                                            <div className="rounded-t-3xl border-t border-[#e5e7eb] p-5 bg-white/95 backdrop-blur-md">
+                                                <div className="max-h-48 overflow-y-auto mb-3 space-y-3 pr-2 custom-scrollbar">
+                                                    {cart.map(item => {
+                                                        const prod = products.find(p => p.id === item.id);
+                                                        const brand = prod?.brand || 'Natura';
+                                                        const activeCycle = cycles.find(c => c.status === 'open' && c.brand === brand);
+                                                        return (
+                                                            <div key={item.id} className="flex flex-col gap-2 border-b border-stone-100 pb-3 last:border-0">
+                                                                <div className="flex justify-between items-center">
+                                                                    <div className="flex-1">
+                                                                        <div className="text-xs font-bold text-[#1e4620] line-clamp-1">{item.name}</div>
+                                                                        <div className="flex items-center gap-2 mt-1">
+                                                                            <div className="flex items-center bg-stone-100 rounded-lg h-6"><button onClick={() => updateQty(item.id, -1)} className="px-2"><Minus className="w-3 h-3"/></button><span className="text-xs font-bold w-4 text-center">{item.qty}</span><button onClick={() => updateQty(item.id, 1)} className="px-2"><Plus className="w-3 h-3"/></button></div>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="flex flex-col items-end gap-1 w-24">
+                                                                        <button onClick={() => removeFromCart(item.id)} className="text-stone-300 hover:text-red-400"><X className="w-3 h-3"/></button>
+                                                                        <MoneyInput className="w-full text-right text-xs font-bold border-b border-stone-200 focus:border-[#d97706] outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo" onChange={val => updateTransactionPrice(item.id, val || 0)} />
                                                                     </div>
                                                                 </div>
-                                                                <div className="flex flex-col items-end gap-1 w-24">
-                                                                    <button onClick={() => removeFromCart(item.id)} className="text-stone-300 hover:text-red-400"><X className="w-3 h-3"/></button>
-                                                                    <MoneyInput className="w-full text-right text-xs font-bold border-b border-stone-200 focus:border-[#d97706] outline-none bg-transparent" value={item.transactionPrice === 0 ? '' : item.transactionPrice} placeholder="Costo" onChange={val => updateTransactionPrice(item.id, val || 0)} />
+                                                                
+                                                                {/* Source Selector Per Item */}
+                                                                <div className="flex gap-2">
+                                                                    <button onClick={() => updateItemOrigin(item.id, 'cycle')} disabled={!activeCycle} className={`flex-1 py-1 text-[10px] font-bold rounded border transition-all ${item.orderType === 'cycle' ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-white text-stone-400 border-stone-100'} ${!activeCycle ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                                                        {activeCycle ? `Ciclo (${activeCycle.name})` : 'Sin Ciclo Abierto'}
+                                                                    </button>
+                                                                    <button onClick={() => updateItemOrigin(item.id, 'web')} className={`flex-1 py-1 text-[10px] font-bold rounded border transition-all ${item.orderType === 'web' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-stone-400 border-stone-100'}`}>Web (Express)</button>
                                                                 </div>
                                                             </div>
-                                                            <div className="flex gap-2">
-                                                                <button onClick={() => updateItemOrigin(item.id, 'cycle')} disabled={!activeCycle} className={`flex-1 py-1 text-[10px] font-bold rounded border transition-all ${item.orderType === 'cycle' ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-white text-stone-400 border-stone-100'} ${!activeCycle ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                                                                    {activeCycle ? `Ciclo (${activeCycle.name})` : 'Sin Ciclo Abierto'}
-                                                                </button>
-                                                                <button onClick={() => updateItemOrigin(item.id, 'web')} className={`flex-1 py-1 text-[10px] font-bold rounded border transition-all ${item.orderType === 'web' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white text-stone-400 border-stone-100'}`}>Web (Express)</button>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
+                                                        );
+                                                    })}
+                                                </div>
+                                                <button onClick={handleCreateSupplyOrder} className="w-full py-4 bg-[#1e4620] text-white rounded-2xl font-bold shadow-xl flex justify-between px-6 text-lg"><span>Confirmar Abastecimiento</span><span>${formatMoney(cartTotal)}</span></button>
                                             </div>
-                                            <button onClick={handleCreateSupplyOrder} className="w-full py-4 bg-[#1e4620] text-white rounded-2xl font-bold shadow-xl flex justify-between px-6 text-lg"><span>Confirmar Abastecimiento</span><span>${formatMoney(cartTotal)}</span></button>
                                         </div>
                                     </div>
-                                </div>
+                                )}
                             </div>
                         )}
                     </div>
