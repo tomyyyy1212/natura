@@ -5,7 +5,6 @@ import { getFirestore, collection, addDoc, setDoc, updateDoc, deleteDoc, doc, on
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-// --- CONFIGURACIÓN FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyDwPmUUYFYuoIZFKlY7T6ZHbBB65GeyJzo",
   authDomain: "natura-a5c0e.firebaseapp.com",
@@ -54,7 +53,6 @@ export default function PosApp() {
       return { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'BIEN' };
   };
     
-  // --- ESTADOS ---
   const [user, setUser] = useState(null); 
   const [view, setView] = useState('pos'); 
   const [products, setProducts] = useState([]);
@@ -80,7 +78,6 @@ export default function PosApp() {
   const [confirmationState, setConfirmationState] = useState({ show: false, title: '', message: '', type: 'neutral', onConfirm: null });
   const triggerAlert = (title, message, type = 'error') => { setAlertState({ show: true, title, message, type }); };
   
-  // Modales y UI
   const [confirmDeliveryModal, setConfirmDeliveryModal] = useState({ show: false, transaction: null });
   const [deliveryDateInput, setDeliveryDateInput] = useState(new Date().toISOString().split('T')[0]);
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
@@ -205,37 +202,27 @@ export default function PosApp() {
       return schedule;
   };
 
-  // --- DYNAMIC CYCLE STATS CALCULATOR ---
   const calculateCycleStats = (cycleId) => {
       const cycle = cycles.find(c => c.id === cycleId);
       if (!cycle) return null;
-      
       const ordersInCycle = transactions.filter(t => (t.type === 'order' || (t.type === 'sale' && t.cycleId === cycle.id)) && t.cycleId === cycle.id);
-      
       let clientPoints = 0, stockPoints = 0;
       const productMap = {};
-
       ordersInCycle.forEach(o => {
           if (o.type === 'order' && o.clientId === 'Para Inversión') stockPoints += (o.totalPoints || 0); else clientPoints += (o.totalPoints || 0);
-          
           (o.items || []).forEach(item => {
-              if (!productMap[item.id]) {
-                  productMap[item.id] = { id: item.id, name: item.name, totalQty: 0, requesters: [] };
-              }
+              if (!productMap[item.id]) { productMap[item.id] = { id: item.id, name: item.name, totalQty: 0, requesters: [] }; }
               productMap[item.id].totalQty += item.qty;
               const clientName = o.clientId === 'Para Inversión' ? 'Para Stock' : (clients.find(c => c.id === o.clientId)?.name || 'Cliente');
               const existingRequester = productMap[item.id].requesters.find(r => r.name === clientName);
-              if (existingRequester) existingRequester.qty += item.qty;
-              else productMap[item.id].requesters.push({ name: clientName, qty: item.qty });
+              if (existingRequester) existingRequester.qty += item.qty; else productMap[item.id].requesters.push({ name: clientName, qty: item.qty });
           });
       });
-      
       const aggregatedProducts = Object.values(productMap).sort((a,b) => a.name.localeCompare(b.name));
       const totalPoints = clientPoints + stockPoints; 
       const progress = cycle.goal > 0 ? (totalPoints / cycle.goal) * 100 : 0;
       const diffTime = new Date(cycle.closingDate) - new Date(); 
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
       return { ...cycle, totalPoints, clientPoints, stockPoints, progress, orders: ordersInCycle, remainingDays: diffDays, aggregatedProducts };
   };
 
@@ -246,7 +233,6 @@ export default function PosApp() {
   const currentCycleStats = useMemo(() => {
       return viewingCycle ? calculateCycleStats(viewingCycle.id) : null;
   }, [viewingCycle, cycles, transactions, clients]);
-
 
   const handleConfirmCheckout = async () => {
     if (!selectedClient) { triggerAlert("Falta Cliente", "Selecciona un cliente.", "error"); return; }
@@ -265,19 +251,17 @@ export default function PosApp() {
         const isCompleteReady = stockAnalysis.missing.length === 0;
         const mainStatus = isCompleteReady ? 'pending_delivery' : 'pending_order';
 
-        // 1. ASSIGN STOCK (FIFO) -> Delivered/Reserved
+        // 1. STOCK DISPONIBLE -> ENTREGA INMEDIATA
         for (let item of stockAnalysis.available) {
              const { totalCost, batchUpdates, fifoDetails } = await calculateFIFOCost(item.id, item.qty);
              batchUpdates.forEach(u => batch.update(doc(db, `artifacts/${APP_ID}/public/data/inventory_batches`, u.id), { remainingQty: u.newRemainingQty }));
              batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
              transactionFIFO += totalCost;
-             // Stock found -> 'delivered' (Entrega Inmediata)
              finalItems.push({ ...item, fifoTotalCost: totalCost, fifoDetails: fifoDetails, status: 'delivered', orderType: 'stock' });
         }
         
-        // 2. HANDLE MISSING (Backorder) -> Pending Order
+        // 2. SIN STOCK -> POR ENCARGAR (Pendiente, sin origen definido aun en venta)
         for (let item of stockAnalysis.missing) {
-             // Missing items default to 'cycle' order type (Por Encargar)
              finalItems.push({ ...item, status: 'pending', orderType: 'cycle' }); 
         }
 
@@ -865,7 +849,331 @@ export default function PosApp() {
             </div>
         )}
 
-        {/* --- PURCHASES VIEW (RESTORED) --- */}
+        {/* --- CHECK-IN OVERLAY (IMPROVED UI) --- */}
+        {checkInOrder && (
+            <div className="fixed inset-0 z-[60] bg-[#fdfbf7] flex flex-col animate-in slide-in-from-bottom duration-300">
+                <div className="px-6 py-5 bg-white border-b border-[#e5e7eb] flex justify-between items-center shadow-sm">
+                    <div>
+                        <h2 className="font-serif font-bold text-2xl text-[#1e4620]">Recepción de Pedido</h2>
+                        <p className="text-xs text-stone-500 font-medium mt-1">Confirma el stock y fecha de vencimiento</p>
+                    </div>
+                    <button onClick={() => {setCheckInOrder(null); setCheckInItems([]);}} className="p-2 bg-stone-100 rounded-full hover:bg-stone-200 text-stone-500"><X className="w-6 h-6"/></button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-6 bg-[#fdfbf7]">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-24">
+                        {checkInItems.map((item, idx) => (
+                            <div key={item._tempId} className={`relative p-5 bg-white rounded-2xl shadow-sm border-2 transition-all ${!item.expirationDate ? 'border-amber-200' : 'border-emerald-200 ring-2 ring-emerald-50'}`}>
+                                <div className="absolute -top-3 -left-2 bg-[#1e4620] text-white text-xs font-bold px-2 py-1 rounded-lg shadow-sm">#{idx+1}</div>
+                                <div className="font-bold text-[#1e4620] mb-1 line-clamp-2 min-h-[3rem]">{item.name}</div>
+                                <div className="flex items-end gap-3 mt-4">
+                                    <div className="flex-1">
+                                        <label className="text-[10px] uppercase font-bold text-stone-400 mb-1 block">Vencimiento</label>
+                                        <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border ${!item.expirationDate ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                                            <CalendarDays className={`w-5 h-5 ${!item.expirationDate ? 'text-amber-500' : 'text-emerald-500'}`}/>
+                                            <input type="date" className="bg-transparent font-bold text-sm outline-none w-full text-stone-700" value={item.expirationDate} onChange={(e) => updateCheckInDate(item._tempId, e.target.value)}/>
+                                        </div>
+                                    </div>
+                                    <div className={`p-2 rounded-full ${!item.expirationDate ? 'bg-stone-100 text-stone-300' : 'bg-emerald-500 text-white shadow-md animate-in zoom-in'}`}>
+                                        <Check className="w-6 h-6"/>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                <div className="p-6 bg-white border-t border-[#e5e7eb] shadow-[0_-5px_20px_rgba(0,0,0,0.05)]">
+                    <button onClick={confirmCheckIn} className="w-full py-4 bg-[#1e4620] hover:bg-[#153316] text-white font-bold rounded-2xl shadow-xl transition-all active:scale-[0.99] flex justify-between px-8 text-lg">
+                        <span>Confirmar Ingreso</span>
+                        <PackageCheck className="w-6 h-6"/>
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {view === 'cycles' && (
+             <div className="p-6 overflow-y-auto pb-24 h-full bg-[#fdfbf7]">
+                 {!viewingCycle ? (
+                     // --- DASHBOARD DE CICLOS (Vista Lista) ---
+                     <div className="max-w-4xl mx-auto h-full flex flex-col">
+                         <div className="flex justify-between items-center mb-8 shrink-0">
+                             <h2 className="font-serif font-bold text-2xl text-[#1e4620]">Ciclos Activos</h2>
+                             <button onClick={() => setIsCycleModalOpen(true)} className="px-5 py-3 bg-[#1e4620] text-white rounded-xl font-bold shadow-lg hover:bg-[#153316] flex items-center gap-2"><Plus className="w-5 h-5"/> Nuevo</button>
+                         </div>
+                         
+                         {activeCyclesList.length === 0 ? (
+                             <div className="flex-1 flex flex-col items-center justify-center text-center bg-white rounded-3xl border-2 border-dashed border-stone-200 p-10">
+                                 <Target className="w-16 h-16 text-[#d97706] mb-4 opacity-50"/>
+                                 <h3 className="text-xl font-bold text-stone-400 mb-2">No tienes ciclos abiertos</h3>
+                                 <p className="text-sm text-stone-400 mb-6 max-w-xs">Inicia un ciclo para empezar a acumular pedidos.</p>
+                             </div>
+                         ) : (
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 overflow-y-auto">
+                                 {activeCyclesList.map(cycle => (
+                                     <div key={cycle.id} onClick={() => setViewingCycle(cycle)} className={`bg-white rounded-3xl p-6 shadow-sm border-2 cursor-pointer transition-all hover:shadow-xl hover:scale-[1.02] group ${getBrandStyle(cycle.brand || 'natura')}`}>
+                                         <div className="flex justify-between items-start mb-6">
+                                             <div>
+                                                 <span className="text-[10px] font-bold uppercase tracking-widest opacity-70 mb-1 block">{cycle.brand || 'General'}</span>
+                                                 <h3 className="text-2xl font-serif font-black">{cycle.name}</h3>
+                                             </div>
+                                             <div className="bg-white/50 backdrop-blur-sm p-2 rounded-xl">
+                                                 <ArrowRight className="w-6 h-6 opacity-50 group-hover:opacity-100 group-hover:translate-x-1 transition-all"/>
+                                             </div>
+                                         </div>
+                                         
+                                         <div className="mb-4">
+                                             <div className="flex justify-between text-xs font-bold mb-1">
+                                                 <span>Progreso ({Math.round(cycle.progress)}%)</span>
+                                                 <span>{cycle.totalPoints} / {cycle.goal} pts</span>
+                                             </div>
+                                             <div className="h-3 bg-white/50 rounded-full overflow-hidden">
+                                                 <div className="h-full bg-current opacity-80 transition-all duration-1000" style={{ width: `${Math.min(cycle.progress, 100)}%` }}></div>
+                                             </div>
+                                         </div>
+                                         
+                                         <div className="flex justify-between items-center text-xs font-bold opacity-80">
+                                             <div className="flex items-center gap-1"><Clock className="w-4 h-4"/> Cierra en {cycle.remainingDays} días</div>
+                                             <div className="flex items-center gap-1"><Package className="w-4 h-4"/> {cycle.orders.length} pedidos</div>
+                                         </div>
+                                     </div>
+                                 ))}
+                             </div>
+                         )}
+                     </div>
+                 ) : (
+                     // --- DETALLE DE CICLO ESPECIFICO ---
+                     <div className="max-w-4xl mx-auto animate-in slide-in-from-right duration-300 h-full flex flex-col">
+                         <button onClick={() => setViewingCycle(null)} className="mb-4 flex items-center gap-2 text-stone-500 font-bold hover:text-[#1e4620] shrink-0"><ChevronLeft className="w-5 h-5"/> Volver al tablero</button>
+                         
+                         {currentCycleStats && (
+                             <div className="space-y-8 flex-1 overflow-y-auto pb-20">
+                                 {/* Header del Ciclo */}
+                                 <div className={`rounded-3xl p-8 shadow-xl border relative overflow-hidden ${getBrandStyle(currentCycleStats.brand || 'natura')}`}>
+                                     <div className="relative z-10">
+                                         <div className="flex justify-between items-start mb-6">
+                                             <div>
+                                                 <span className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider border border-white/10">{currentCycleStats.brand}</span>
+                                                 <h2 className="text-4xl font-serif font-black mt-3 mb-1">{currentCycleStats.name}</h2>
+                                                 <div className="text-sm font-bold opacity-80">Cierre: {new Date(currentCycleStats.closingDate).toLocaleDateString()}</div>
+                                             </div>
+                                             <div className="text-right">
+                                                 <div className="text-xs font-bold opacity-60 uppercase">Meta</div>
+                                                 <div className="text-3xl font-black">{currentCycleStats.goal} pts</div>
+                                             </div>
+                                         </div>
+                                         
+                                         <div className="flex flex-col sm:flex-row gap-3 mt-8">
+                                             <button onClick={() => { clearCart(); setSelectedCycle(currentCycleStats.id); setSelectedSupplier('Para Inversión'); setOrderSource('cycle_stock'); setView('purchases'); setPurchasesSubView('orders'); }} className="flex-1 py-4 bg-white text-stone-800 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all"><Plus className="w-5 h-5"/> Inversión Stock</button>
+                                             <button onClick={() => handleCloseCycle(currentCycleStats.id)} disabled={currentCycleStats.totalPoints < currentCycleStats.goal} className="px-6 py-4 bg-stone-900 text-white rounded-xl font-bold disabled:opacity-50 transition-colors shadow-lg hover:bg-black">Cerrar Ciclo</button>
+                                         </div>
+                                     </div>
+                                 </div>
+                                 
+                                 {/* Agrupación por Productos (LO NUEVO) */}
+                                 <div>
+                                     <h3 className="font-serif font-bold text-xl text-[#1e4620] mb-4 flex items-center gap-2"><ClipboardList className="w-6 h-6 text-[#d97706]"/> Resumen para Pedido</h3>
+                                     {currentCycleStats.aggregatedProducts.length === 0 ? (
+                                         <div className="text-center py-12 text-stone-400 italic bg-white rounded-2xl border-2 border-dashed">No hay productos agregados a este ciclo aún.</div>
+                                     ) : (
+                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                             {currentCycleStats.aggregatedProducts.map(prod => (
+                                                 <div key={prod.id} className="bg-white p-5 rounded-2xl shadow-sm border border-stone-100 hover:border-[#1e4620]/20 transition-all flex flex-col">
+                                                     <div className="flex justify-between items-start mb-3">
+                                                         <div className="font-bold text-[#1e4620] text-lg leading-snug">{prod.name}</div>
+                                                         <div className="bg-[#1e4620] text-white text-xl font-black px-3 py-1 rounded-lg min-w-[3rem] text-center">{prod.totalQty}</div>
+                                                     </div>
+                                                     <div className="bg-[#fdfbf7] p-3 rounded-xl border border-[#e5e7eb] mt-auto">
+                                                         <div className="text-[10px] uppercase font-bold text-stone-400 mb-2">Solicitado por:</div>
+                                                         <div className="flex flex-wrap gap-2">
+                                                             {prod.requesters.map((req, idx) => (
+                                                                 <div key={idx} className="flex items-center gap-2 text-xs bg-white border border-stone-200 px-2 py-1 rounded-lg shadow-sm">
+                                                                     <span className="font-bold text-stone-600">{req.name}</span>
+                                                                     <span className="bg-[#d97706]/10 text-[#d97706] font-bold px-1.5 rounded text-[10px]">x{req.qty}</span>
+                                                                 </div>
+                                                             ))}
+                                                         </div>
+                                                     </div>
+                                                 </div>
+                                             ))}
+                                         </div>
+                                     )}
+                                 </div>
+                             </div>
+                         )}
+                     </div>
+                 )}
+             </div>
+        )}
+
+        {view === 'finances' && (
+             <div className="p-6 pb-24 h-full overflow-y-auto bg-[#fdfbf7]">
+                 <div className="max-w-4xl mx-auto space-y-8">
+                     <div className="mb-8 bg-[#1e4620] p-8 rounded-3xl shadow-xl text-white relative overflow-hidden">
+                         <DollarSign className="absolute -right-6 -bottom-6 w-40 h-40 text-white/5 rotate-12"/>
+                         <div className="relative z-10 text-center">
+                             <h2 className="font-serif font-bold text-2xl mb-2 text-[#aabfb0]">Cuentas por Cobrar</h2>
+                             <div className="text-5xl font-black tracking-tight mb-2">${formatMoney(pendingPaymentTransactions.reduce((acc, t) => acc + t.balance, 0))}</div>
+                             <p className="text-xs text-[#d97706] font-bold uppercase tracking-widest bg-white/10 inline-block px-3 py-1 rounded-full">Saldo Total Clientes</p>
+                         </div>
+                     </div>
+                     <div className="space-y-4">
+                         {pendingPaymentTransactions.map(tx => (
+                             <div key={tx.id} onClick={() => { setSelectedPaymentTx(tx); setPaymentModalOpen(true); setSelectedPaymentIndex(null); setPaymentAmountInput(''); setPaymentReceiptFile(null); }} className="bg-white p-6 rounded-2xl shadow-sm border border-stone-100 cursor-pointer hover:border-[#1e4620] hover:shadow-lg transition-all group">
+                                 <div className="flex justify-between items-start mb-4">
+                                     <div className="flex items-center gap-4">
+                                         <div className="w-12 h-12 rounded-full bg-[#fdfbf7] border border-stone-100 flex items-center justify-center font-bold text-[#1e4620] text-xl shadow-sm group-hover:bg-[#1e4620] group-hover:text-white transition-colors">{getClientName(tx.clientId).charAt(0)}</div>
+                                         <div>
+                                             <div className="font-bold text-[#1e4620] text-lg">{getClientName(tx.clientId)}</div>
+                                             <div className="text-xs text-stone-400 font-medium">#{tx.displayId} • {formatDateSimple(tx.date.seconds)}</div>
+                                         </div>
+                                     </div>
+                                     <div className="bg-red-50 text-red-600 text-sm font-bold px-4 py-1.5 rounded-full border border-red-100">Debe: ${formatMoney(tx.balance)}</div>
+                                 </div>
+                                 <div className="relative w-full bg-stone-100 h-2 rounded-full overflow-hidden">
+                                     <div className="bg-[#1e4620] h-full absolute left-0 top-0" style={{ width: `${((tx.total - tx.balance) / tx.total) * 100}%` }}></div>
+                                 </div>
+                             </div>
+                         ))}
+                     </div>
+                 </div>
+             </div>
+        )}
+
+        {view === 'receipts' && (
+            <div className="p-6 h-full overflow-y-auto pb-24 bg-[#fdfbf7]">
+                <div className="max-w-4xl mx-auto space-y-12">
+                    {/* 1. EN REPARTO */}
+                    <div>
+                        <h2 className="font-serif font-bold text-xl text-[#1e4620] mb-4 border-b border-[#e5e7eb] pb-2 flex items-center gap-2"><Bike className="w-6 h-6 text-orange-500"/> En Reparto</h2>
+                        <div className="grid gap-4">
+                            {filteredSales.inTransit.length === 0 && <div className="text-center text-stone-400 py-4 italic text-sm">No hay pedidos en reparto.</div>}
+                            {filteredSales.inTransit.map(t => (
+                                <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-orange-500 shadow-sm relative overflow-hidden group cursor-pointer hover:bg-orange-50/30 transition-colors">
+                                    <div className="absolute right-0 top-0 bg-orange-100 text-orange-800 text-[10px] font-bold px-3 py-1 rounded-bl-xl uppercase tracking-wider">Lleva: {t.courier}</div>
+                                    <div className="flex justify-between items-start mb-2 mt-2">
+                                        <div>
+                                            <span className="font-bold text-lg text-[#1e4620]">{getClientName(t.clientId)}</span>
+                                            <div className="text-xs text-stone-400 font-medium mt-0.5">#{t.displayId} • {formatDateSimple(t.date.seconds)}</div>
+                                        </div>
+                                        <span className="font-black text-xl text-[#1e4620]">${formatMoney(t.total)}</span>
+                                    </div>
+                                    <div className="flex gap-3 mt-4 pt-4 border-t border-stone-100">
+                                        <button onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} className="px-4 py-2 bg-red-50 text-red-600 rounded-xl text-xs font-bold hover:bg-red-100 transition-colors flex items-center gap-1"><Undo2 className="w-4 h-4"/> No Retiró</button>
+                                        <button onClick={(e) => { e.stopPropagation(); handleConfirmDeliveryClick(t); }} className="flex-1 py-2 bg-[#1e4620] text-white rounded-xl text-sm font-bold shadow-md hover:bg-[#153316] transition-colors flex items-center justify-center gap-2"><Check className="w-4 h-4"/> Confirmar Entrega</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* 2. POR ENTREGAR */}
+                    <div>
+                        <h2 className="font-serif font-bold text-xl text-[#1e4620] mb-4 border-b border-[#e5e7eb] pb-2 flex items-center gap-2"><PackageCheck className="w-6 h-6 text-blue-500"/> Por Entregar (Stock Listo)</h2>
+                        <div className="grid gap-4">
+                            {filteredSales.pending_delivery.length === 0 && <div className="text-center text-stone-400 py-4 italic text-sm">No hay pedidos listos.</div>}
+                            {filteredSales.pending_delivery.map(t => {
+                                const tag = getOrderTag(t);
+                                return (
+                                    <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-green-600 shadow-sm relative cursor-pointer hover:bg-green-50/30 transition-colors">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <span className="font-bold text-lg text-[#1e4620]">{getClientName(t.clientId)}</span>
+                                                <div className="text-xs text-stone-400 font-medium mt-0.5">#{t.displayId} • {formatDateSimple(t.date.seconds)}</div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="font-black text-xl text-[#1e4620]">${formatMoney(t.total)}</div>
+                                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${tag.color} inline-block mt-1`}>{tag.label}</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-3 mt-4 pt-4 border-t border-stone-100">
+                                            <button onClick={(e) => { e.stopPropagation(); handleNotifyClient(t); }} className="flex-1 py-2.5 bg-[#fdfbf7] text-[#1e4620] border border-[#1e4620] rounded-xl text-sm font-bold hover:bg-[#e8f5e9] transition-colors flex items-center justify-center gap-2"><MessageCircle className="w-4 h-4"/> Avisar</button>
+                                            <button onClick={(e) => { e.stopPropagation(); handleDeliverOrder(t); }} className="flex-1 py-2.5 bg-[#1e4620] text-white rounded-xl text-sm font-bold shadow-md hover:bg-[#153316] transition-colors flex items-center justify-center gap-2"><Truck className="w-4 h-4"/> Despachar</button>
+                                            <button onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} className="px-3 bg-stone-100 text-stone-400 rounded-xl hover:bg-red-50 hover:text-red-500 transition-colors"><Trash2 className="w-5 h-5"/></button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* 3. POR RECIBIR (Ciclo Cerrado / Web) */}
+                    <div>
+                        <h2 className="font-serif font-bold text-xl text-[#1e4620] mb-4 border-b border-[#e5e7eb] pb-2 flex items-center gap-2"><Clock className="w-6 h-6 text-amber-500"/> Por Recibir (Pedido a Marca)</h2>
+                        <div className="grid gap-4">
+                            {filteredSales.toArrive.length === 0 && <div className="text-center text-stone-400 py-4 italic text-sm">No hay pedidos por recibir.</div>}
+                            {filteredSales.toArrive.map(t => {
+                                const tag = getOrderTag(t);
+                                return (
+                                    <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-amber-300 shadow-sm relative cursor-pointer hover:bg-amber-50/30 transition-colors">
+                                        <div className="absolute right-3 top-3 text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded">POR RECIBIR</div>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <span className="font-bold text-lg text-stone-700">{getClientName(t.clientId)}</span>
+                                                <div className="text-xs text-stone-400 font-medium mt-0.5">#{t.displayId} • {formatDateSimple(t.date.seconds)}</div>
+                                            </div>
+                                            <div className="text-right mt-6">
+                                                <div className="font-bold text-xl text-stone-600">${formatMoney(t.total)}</div>
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-3 mt-4 pt-4 border-t border-stone-100">
+                                            <div className="flex-1 py-2.5 bg-amber-50 text-amber-600 rounded-xl text-sm font-bold flex items-center justify-center gap-2 cursor-default"><Clock className="w-4 h-4"/> Pedido a Marca</div>
+                                            <button onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} className="px-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors"><Trash2 className="w-5 h-5"/></button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* 4. POR ENCARGAR (Ciclo Abierto) */}
+                    <div>
+                        <h2 className="font-serif font-bold text-xl text-[#1e4620] mb-4 border-b border-[#e5e7eb] pb-2 flex items-center gap-2"><ClipboardList className="w-6 h-6 text-stone-400"/> Por Encargar (Borradores)</h2>
+                        <div className="grid gap-4">
+                            {filteredSales.toOrder.length === 0 && <div className="text-center text-stone-400 py-4 italic text-sm">No hay pedidos pendientes de encargar.</div>}
+                            {filteredSales.toOrder.map(t => {
+                                return (
+                                    <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-stone-50 p-5 rounded-2xl border-2 border-dashed border-stone-200 shadow-sm relative opacity-90 cursor-pointer hover:bg-white hover:border-[#1e4620]/30 transition-all">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <span className="font-bold text-lg text-stone-600">{getClientName(t.clientId)}</span>
+                                                <div className="text-xs text-stone-400 font-medium mt-0.5">#{t.displayId} • {formatDateSimple(t.date.seconds)}</div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="font-bold text-xl text-stone-500">${formatMoney(t.total)}</div>
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-3 mt-4 pt-4 border-t border-stone-200">
+                                            <div className="flex-1 py-2.5 text-stone-400 text-sm font-bold flex items-center justify-center gap-2 cursor-default"><CalendarClock className="w-4 h-4"/> Ciclo Abierto</div>
+                                            <button onClick={(e) => { e.stopPropagation(); handleVoidTransaction(t); }} className="px-3 bg-white border border-stone-200 text-stone-400 rounded-xl hover:text-red-500 hover:border-red-200 transition-colors"><Trash2 className="w-5 h-5"/></button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* 5. HISTORIAL */}
+                    <div>
+                        <h2 className="font-serif font-bold text-xl text-[#1e4620] mb-4 border-b border-[#e5e7eb] pb-2 flex items-center gap-2"><History className="w-6 h-6 text-stone-400"/> Historial de Ventas</h2>
+                        <div className="space-y-3">
+                            {filteredSales.completed.slice(0, 10).map(t => (
+                                <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-4 rounded-xl border border-stone-100 shadow-sm flex justify-between items-center opacity-75 hover:opacity-100 transition-opacity cursor-pointer">
+                                    <div>
+                                        <div className="font-bold text-[#1e4620]">{getClientName(t.clientId)}</div>
+                                        <div className="text-xs text-stone-400">#{t.displayId} • {formatDateSimple(t.date.seconds)}</div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="font-bold text-[#1e4620]">${formatMoney(t.total)}</div>
+                                        <div className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded inline-block">ENTREGADO</div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- PURCHASES VIEW (CLEANED UP) --- */}
         {view === 'purchases' && (
             <div className="flex flex-col h-full bg-[#fdfbf7]">
                 {/* NEW HEADER FOR MANAGEMENT */}
@@ -882,12 +1190,14 @@ export default function PosApp() {
 
                 {purchasesSubView === 'orders' && (
                     <div className="flex-1 overflow-y-auto p-6 space-y-6 pb-24">
-                        <div className="flex gap-3 mb-4">
-                             <button onClick={() => { setEditingProduct(null); setProductPriceInput(''); setIsProductModalOpen(true); }} className="flex-1 bg-white text-[#1e4620] p-3 rounded-2xl shadow-sm flex items-center justify-center gap-2 hover:shadow-md transition-all active:scale-95 border border-stone-100 text-sm font-bold">
-                                <Plus className="w-4 h-4"/> Nuevo Producto
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                             <button onClick={() => { setEditingProduct(null); setProductPriceInput(''); setIsProductModalOpen(true); }} className="bg-white text-[#1e4620] p-4 rounded-2xl shadow-sm flex flex-col items-center justify-center gap-2 hover:shadow-md transition-all active:scale-95 border border-stone-100">
+                                <div className="p-2 bg-[#1e4620]/10 rounded-full"><Plus className="w-6 h-6 text-[#1e4620]"/></div>
+                                <span className="font-bold text-sm">Nuevo Producto</span>
                              </button>
-                             <button onClick={() => setIsCategoryModalOpen(true)} className="flex-1 bg-white text-[#1e4620] p-3 rounded-2xl shadow-sm flex items-center justify-center gap-2 hover:shadow-md transition-all active:scale-95 border border-stone-100 text-sm font-bold">
-                                <Tag className="w-4 h-4"/> Categorías
+                             <button onClick={() => setIsCategoryModalOpen(true)} className="bg-white text-[#1e4620] p-4 rounded-2xl shadow-sm flex flex-col items-center justify-center gap-2 hover:shadow-md transition-all active:scale-95 border border-stone-100">
+                                <div className="p-2 bg-[#1e4620]/10 rounded-full"><Tag className="w-6 h-6 text-[#1e4620]"/></div>
+                                <span className="font-bold text-sm">Categorías</span>
                              </button>
                         </div>
 
