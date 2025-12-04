@@ -77,7 +77,7 @@ export default function PosApp() {
   const [alertState, setAlertState] = useState({ show: false, title: '', message: '', type: 'info' }); 
   const [confirmationState, setConfirmationState] = useState({ show: false, title: '', message: '', type: 'neutral', onConfirm: null });
   const triggerAlert = (title, message, type = 'error') => { setAlertState({ show: true, title, message, type }); };
-   
+    
   const [confirmDeliveryModal, setConfirmDeliveryModal] = useState({ show: false, transaction: null });
   const [deliveryDateInput, setDeliveryDateInput] = useState(new Date().toISOString().split('T')[0]);
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
@@ -164,10 +164,10 @@ export default function PosApp() {
           if (originWeb && originCycle) return { label: 'Llegó (Mixto)', color: 'bg-indigo-100 text-indigo-700', icon: Layers };
           if (originWeb) return { label: 'Llegó por Web', color: 'bg-blue-100 text-blue-700', icon: Globe };
           if (originCycle) return { label: 'Llegó por Ciclo', color: 'bg-purple-100 text-purple-700', icon: Repeat };
-          return { label: 'Llegó Stock', color: 'bg-green-100 text-green-700', icon: CheckCircle2 };
+          return { label: 'En Stock (Reservado)', color: 'bg-green-100 text-green-700', icon: CheckCircle2 };
       }
 
-      if (isStock) return { label: 'Entrega Inmediata', color: 'bg-emerald-100 text-emerald-700', icon: PackageCheck };
+      if (isStock) return { label: 'Entregado', color: 'bg-emerald-100 text-emerald-700', icon: PackageCheck };
       
       return { label: 'Completado', color: 'bg-gray-100 text-gray-500', icon: Check };
   };
@@ -223,12 +223,16 @@ export default function PosApp() {
       return schedule;
   };
 
+  // --- MOVED UP HERE TO PREVENT REFERENCE ERROR ---
+  const getClientName = (id) => { if (!id) return 'Consumidor Final'; const c = clients.find(c => c.id === id); return c ? c.name : 'Consumidor Final'; };
+
   // --- LÓGICA DE CICLOS INTELIGENTE ---
   const calculateCycleStats = (cycleId) => {
       const cycle = cycles.find(c => c.id === cycleId);
       if (!cycle) return null;
       
       // 1. Obtener Pedidos de Abastecimiento (Entradas de Stock del Ciclo)
+      // MODIFICACIÓN: Incluimos 'open_cycle_order' para que sume a la estadística aunque no esté "Por Llegar"
       const ordersInCycle = transactions.filter(t => 
           t.cycleId === cycle.id && 
           ['order', 'sale', 'stock_entry', 'purchase'].includes(t.type)
@@ -341,7 +345,9 @@ export default function PosApp() {
              batch.update(doc(db, `artifacts/${APP_ID}/public/data/products`, item.id), { stock: increment(-item.qty) });
              transactionFIFO += totalCost;
              
-             finalItems.push({ ...item, fifoTotalCost: totalCost, fifoDetails: fifoDetails, status: 'delivered', orderType: 'stock' });
+             // CORRECCIÓN: El estado ahora es 'reserved' en lugar de 'delivered'
+             // Esto significa que el stock se asignó, pero no se ha entregado fisicamente al cliente
+             finalItems.push({ ...item, fifoTotalCost: totalCost, fifoDetails: fifoDetails, status: 'reserved', orderType: 'stock' });
         }
         
         for (let item of stockAnalysis.missing) {
@@ -374,7 +380,7 @@ export default function PosApp() {
             origin: 'POS', 
             cycleId: null, 
             courier: null, 
-            deliveredAt: isCompleteReady ? { seconds: now.getTime() / 1000 } : null, 
+            deliveredAt: null, // No se marca deliveredAt hasta que se despacha
             finalizedAt: null 
         };
 
@@ -554,34 +560,38 @@ export default function PosApp() {
           const batch = writeBatch(db);
           const now = new Date();
 
+          // 1. WEB ITEMS: Se van DIRECTO a 'pending_arrival' (Por llegar)
           if (webItems.length > 0) {
               const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
               const total = webItems.reduce((acc, i) => acc + (i.transactionPrice * i.qty), 0);
               const data = {
                   id: newTransId, displayId: generateShortId(), type: 'order', items: webItems, total, totalPoints: 0,
-                  clientId: 'Stock Personal (Web)', date: { seconds: now.getTime() / 1000 }, saleStatus: 'pending_arrival',
+                  clientId: 'Stock Personal (Web)', date: { seconds: now.getTime() / 1000 }, 
+                  saleStatus: 'pending_arrival', // Inmediatamente visible en recepción
                   orderType: 'web', cycleId: null
               };
               batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), data);
           }
 
+          // 2. CYCLE ITEMS: Se van a 'open_cycle_order' (Oculto de "Por llegar" hasta cerrar ciclo)
           for (const [cycleId, items] of Object.entries(cycleGroups)) {
               const newTransId = doc(collection(db, `artifacts/${APP_ID}/public/data/transactions`)).id;
               const total = items.reduce((acc, i) => acc + (i.transactionPrice * i.qty), 0);
-              const totalPoints = items.reduce((acc, i) => acc + ((i.points || 0) * i.qty), 0); // Calculate points for cycle order
+              const totalPoints = items.reduce((acc, i) => acc + ((i.points || 0) * i.qty), 0); 
               const realCycleId = cycleId === 'NO_CYCLE' ? null : cycleId;
               const cycleName = items[0].assignedCycleName || 'General';
 
               const data = {
                   id: newTransId, displayId: generateShortId(), type: 'order', items: items, total, totalPoints: totalPoints,
-                  clientId: `Stock Ciclo (${cycleName})`, date: { seconds: now.getTime() / 1000 }, saleStatus: 'pending_arrival',
+                  clientId: `Stock Ciclo (${cycleName})`, date: { seconds: now.getTime() / 1000 }, 
+                  saleStatus: 'open_cycle_order', // MODIFICADO: Estado temporal
                   orderType: 'cycle', cycleId: realCycleId
               };
               batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), data);
           }
 
           await batch.commit();
-          clearCart(); setOrderSource(null); triggerAlert("Pedidos Creados", "Se han generado las órdenes de abastecimiento.", "success");
+          clearCart(); setOrderSource(null); triggerAlert("Pedidos Creados", "Se han generado las órdenes. Los pedidos de ciclo se acumularán hasta el cierre.", "success");
 
       } catch (error) { console.error(error); triggerAlert("Error", "Fallo al crear pedidos.", "error"); } finally { setLoading(false); setProcessingMsg(''); }
   };
@@ -734,10 +744,11 @@ export default function PosApp() {
       };
   }, [transactions, cycles]);
 
+  // MODIFICADO: Solo mostrar 'pending_arrival' en "Pedidos por Llegar". 
+  // Los pedidos de ciclo abiertos ('open_cycle_order') ahora están ocultos aquí.
   const filteredOrders = useMemo(() => transactions.filter(t => (t.type === 'order' && t.saleStatus === 'pending_arrival') || (t.type === 'purchase' || t.type === 'stock_entry')), [transactions]);
   const pendingArrivals = useMemo(() => filteredOrders.filter(t => t.saleStatus === 'pending_arrival').sort((a,b) => a.date.seconds - b.date.seconds), [filteredOrders]);
   const purchaseHistoryData = filteredOrders.filter(t => t.type === 'purchase' || t.type === 'stock_entry');
-  const getClientName = (id) => { if (!id) return 'Consumidor Final'; const c = clients.find(c => c.id === id); return c ? c.name : 'Consumidor Final'; };
    
   const handleSaveCycle = async (e) => {
       e.preventDefault(); const fd = new FormData(e.currentTarget);
@@ -756,11 +767,22 @@ export default function PosApp() {
       
       if(stats.totalPoints < cycle.goal) { triggerAlert("Meta No Alcanzada", "No puedes cerrar el pedido si no has llegado al límite de puntos.", "error"); return; }
       
-      setConfirmationState({ show: true, title: "Cerrar Ciclo", message: `¿Estás seguro de cerrar el ciclo "${cycle.name}"?\n\nTodos los pedidos pendientes pasarán a estado "Por Recibir".`, type: "neutral", onConfirm: async () => { 
+      setConfirmationState({ show: true, title: "Cerrar Ciclo", message: `¿Estás seguro de cerrar el ciclo "${cycle.name}"?\n\nTodos los pedidos acumulados pasarán automáticamente a "Por Llegar" para su recepción.`, type: "neutral", onConfirm: async () => { 
           setConfirmationState(prev => ({ ...prev, show: false })); setLoading(true); setProcessingMsg("Generando pedidos..."); 
           try { 
-              await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/cycles`, cycle.id), { status: 'closed', closedAt: new Date().toISOString() }); 
-              triggerAlert("Ciclo Cerrado", "El ciclo ha finalizado.", "success"); 
+              const batch = writeBatch(db);
+              
+              // 1. Marcar ciclo como cerrado
+              batch.update(doc(db, `artifacts/${APP_ID}/public/data/cycles`, cycle.id), { status: 'closed', closedAt: new Date().toISOString() }); 
+              
+              // 2. BUSCAR TODOS LOS PEDIDOS 'open_cycle_order' de este ciclo y pasarlos a 'pending_arrival'
+              const ordersToRelease = transactions.filter(t => t.cycleId === cycle.id && t.saleStatus === 'open_cycle_order');
+              ordersToRelease.forEach(order => {
+                  batch.update(doc(db, `artifacts/${APP_ID}/public/data/transactions`, order.id), { saleStatus: 'pending_arrival' });
+              });
+
+              await batch.commit();
+              triggerAlert("Ciclo Cerrado", `El ciclo ha finalizado. ${ordersToRelease.length} pedidos movidos a Recepción.`, "success"); 
               setViewingCycle(null);
           } catch(e) { console.error(e); triggerAlert("Error", "Falló al cerrar ciclo", "error"); } finally { setLoading(false); setProcessingMsg(""); } 
       }});
