@@ -23,6 +23,7 @@ const storage = getStorage(app);
 const APP_ID = "natura-produccion-main";
 
 const BRANDS = ['Natura', 'Avon', 'Cyzone', 'Esika', "L'Bel"];
+const SUPPLY_PROVIDERS = ['Natura', 'Belcorp']; // Agrupación para compras
 const COURIERS = ['Yo (Directo)', 'Mamá (Puesto Feria)', 'Tía Luisa']; 
 
 // --- THEME CONSTANTS ---
@@ -554,7 +555,15 @@ export default function PosApp() {
     const matchesCategory = selectedCategoryFilter === 'ALL' || p.category === selectedCategoryFilter;
     const matchesBrand = selectedBrandFilter === 'ALL' || p.brand === selectedBrandFilter;
     let matchesSupply = true;
-    if (supplyConfig) matchesSupply = p.brand === supplyConfig.brand;
+    if (supplyConfig) {
+        if (supplyConfig.brand === 'Natura') {
+            matchesSupply = ['Natura', 'Avon'].includes(p.brand);
+        } else if (supplyConfig.brand === 'Belcorp') {
+            matchesSupply = ['Cyzone', 'Esika', "L'Bel"].includes(p.brand);
+        } else {
+            matchesSupply = p.brand === supplyConfig.brand;
+        }
+    }
     return matchesSearch && matchesCategory && matchesBrand && matchesSupply;
   });
 
@@ -933,7 +942,7 @@ export default function PosApp() {
                              <p className="text-slate-500 mb-6">¿De qué marca es el pedido que vas a ingresar?</p>
                              
                              <div className="grid grid-cols-2 gap-4">
-                                 {BRANDS.map(brand => (
+                                 {SUPPLY_PROVIDERS.map(brand => (
                                      <button key={brand} 
                                         onClick={() => {
                                             if (supplyMode === 'selection_cycle') {
@@ -944,7 +953,7 @@ export default function PosApp() {
                                                 setSupplyMode('shopping');
                                             }
                                         }}
-                                        className={`p-6 rounded-2xl bg-gradient-to-br ${getBrandGradient(brand)} text-white font-bold text-xl shadow-lg hover:scale-[1.02] transition-transform text-left relative overflow-hidden`}
+                                        className={`p-6 rounded-2xl bg-gradient-to-br ${brand === 'Natura' ? 'from-orange-400 to-amber-500' : 'from-purple-500 to-indigo-600'} text-white font-bold text-xl shadow-lg hover:scale-[1.02] transition-transform text-left relative overflow-hidden`}
                                      >
                                          <span className="relative z-10">{brand}</span>
                                          <Palette className="absolute -bottom-4 -right-4 w-24 h-24 text-white/20 rotate-12"/>
