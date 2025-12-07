@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Users, Plus, Minus, Trash2, Search, Menu, X, ChevronRight, Truck, History, Receipt, UserPlus, Calendar, Tag, Check, MessageCircle, AlertTriangle, BookOpen, Globe, Repeat, ArrowRight, ArrowLeft, CalendarDays, PackageCheck, ScrollText, DollarSign, Image as ImageIcon, Loader2,  CheckCircle2, Clock, AlertCircle, ShoppingBag, Palette, Globe2, ListChecks, CreditCard, TrendingUp, Wallet, PieChart, BarChart3, ArrowUpRight, ArrowDownRight, Filter, TrendingDown, ClipboardList } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Package, Users, Plus, Minus, Trash2, Search, Menu, X, ChevronRight, Truck, History, Receipt, UserPlus, Calendar, Tag, Check, MessageCircle, AlertTriangle, BookOpen, Globe, Repeat, ArrowRight, ArrowLeft, CalendarDays, PackageCheck, ScrollText, DollarSign, Image as ImageIcon, Loader2,  CheckCircle2, Clock, AlertCircle, ShoppingBag, Palette, Globe2, ListChecks, CreditCard, TrendingUp, Wallet, PieChart, BarChart3, ArrowUpRight, ArrowDownRight, Filter, TrendingDown, ClipboardList, Pencil, Upload } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, limit, increment, writeBatch, getDocs, where, getDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
@@ -48,6 +48,43 @@ const MoneyInput = ({ value, onChange, placeholder, className, autoFocus, disabl
     return <input type="text" inputMode="numeric" className={className} placeholder={placeholder} value={displayValue} onChange={handleChange} autoFocus={autoFocus} disabled={disabled} />;
 };
 
+// --- OPTIMIZED IMAGE COMPONENT (FIXED ASPECT RATIO) ---
+const ProductImage = ({ src, alt }) => {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+      setLoaded(false);
+      setError(false);
+  }, [src]);
+
+  if (!src || error) {
+      return (
+          <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-slate-100">
+              <Package className="w-8 h-8 text-slate-300" />
+          </div>
+      );
+  }
+
+  return (
+    <>
+      {!loaded && (
+        <div className="absolute inset-0 bg-slate-200 animate-pulse z-10 flex items-center justify-center">
+            <ImageIcon className="w-6 h-6 text-slate-300 opacity-50"/>
+        </div>
+      )}
+      <img 
+        src={src} 
+        alt={alt || 'Producto'}
+        loading="lazy"
+        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ease-in-out ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        onLoad={() => setLoaded(true)}
+        onError={() => setError(true)}
+      />
+    </>
+  );
+};
+
 export default function PosApp() {
   const formatMoney = (amount) => (amount || 0).toLocaleString('es-CL', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   const formatDateSimple = (seconds) => { if (!seconds) return '-'; const d = new Date(seconds * 1000); return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' }); };
@@ -56,6 +93,23 @@ export default function PosApp() {
       if (stock === 1) return { color: 'bg-rose-100 text-rose-700 border border-rose-200', label: 'CRÍTICO' };
       if (stock > 1 && stock < 4) return { color: 'bg-amber-100 text-amber-800 border border-amber-200', label: 'BAJO' };
       return { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'BIEN' };
+  };
+
+  const getClientName = (id) => { if (!id) return 'Consumidor Final'; const c = clients.find(c => c.id === id); return c ? c.name : 'Consumidor Final'; };
+  
+  const calculatePaymentSchedule = (total, planType, data) => {
+      let schedule = [];
+      if (planType === 'full') { schedule.push({ number: 1, date: null, amount: total, status: 'pending', type: 'total' }); } 
+      else if (planType === 'installments') {
+          const count = Number(data.installmentsCount);
+          const amountPerQuota = Math.round(total / count);
+          for (let i = 0; i < count; i++) {
+              const manualDate = data.installmentDates[i];
+              const dateSecs = manualDate ? new Date(manualDate + 'T12:00:00').getTime() / 1000 : null;
+              schedule.push({ number: i + 1, date: dateSecs, amount: amountPerQuota, status: 'pending', type: 'cuota' });
+          }
+      }
+      return schedule;
   };
     
   const [user, setUser] = useState(null); 
@@ -78,7 +132,9 @@ export default function PosApp() {
   const [supplyPaymentPlan, setSupplyPaymentPlan] = useState('full');
   const [supplyCheckoutData, setSupplyCheckoutData] = useState({ installmentsCount: 3, installmentDates: {} });
 
-  const [paymentMethod, setPaymentMethod] = useState('Efectivo'); 
+  const [paymentMethod, setPaymentMethod] = useState(''); // Estado para medio de pago
+  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); // Estado para archivo de comprobante
+
   const [loading, setLoading] = useState(true); 
   const [searchTerm, setSearchTerm] = useState('');
   const [processingMsg, setProcessingMsg] = useState(''); 
@@ -135,24 +191,6 @@ export default function PosApp() {
 
   // --- ORDER VIEW FILTER STATE ---
   const [orderViewTab, setOrderViewTab] = useState('pending'); // 'pending', 'ready', 'transit'
-
-  // --- UTILS DEFINED HERE TO AVOID HOISTING ISSUES ---
-  const getClientName = (id) => { if (!id) return 'Consumidor Final'; const c = clients.find(c => c.id === id); return c ? c.name : 'Consumidor Final'; };
-  
-  const calculatePaymentSchedule = (total, planType, data) => {
-      let schedule = [];
-      if (planType === 'full') { schedule.push({ number: 1, date: null, amount: total, status: 'pending', type: 'total' }); } 
-      else if (planType === 'installments') {
-          const count = Number(data.installmentsCount);
-          const amountPerQuota = Math.round(total / count);
-          for (let i = 0; i < count; i++) {
-              const manualDate = data.installmentDates[i];
-              const dateSecs = manualDate ? new Date(manualDate + 'T12:00:00').getTime() / 1000 : null;
-              schedule.push({ number: i + 1, date: dateSecs, amount: amountPerQuota, status: 'pending', type: 'cuota' });
-          }
-      }
-      return schedule;
-  };
 
   // --- DERIVED STATE ---
   const stockAnalysis = useMemo(() => {
@@ -289,15 +327,19 @@ export default function PosApp() {
   // --- ACTIONS ---
 
   const calculateFIFO = async (productId, qtyNeeded) => {
+      // FIX: Query without unsupported inequality filter, and manual sort
       const q = query(
           collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`), 
-          where('productId', '==', productId),
-          where('remainingQty', '>', 0),
-          orderBy('date', 'asc')
+          where('productId', '==', productId)
       );
       const snapshot = await getDocs(q);
-      const batches = snapshot.docs.map(d => ({...d.data(), id: d.id}));
       
+      // Sort and filter in memory to avoid index requirement errors
+      const batches = snapshot.docs
+          .map(d => ({...d.data(), id: d.id}))
+          .filter(b => b.remainingQty > 0)
+          .sort((a, b) => (a.date?.seconds || 0) - (b.date?.seconds || 0));
+
       let remaining = qtyNeeded;
       let totalCost = 0;
       const batchUpdates = []; 
@@ -796,7 +838,7 @@ export default function PosApp() {
                          {filteredProducts.map(p => (
                              <div key={p.id} onClick={() => addToCart(p)} className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden flex flex-col group hover:shadow-xl transition-all h-full text-left relative cursor-pointer hover:-translate-y-1">
                                  <div className="aspect-square w-full relative bg-slate-50">
-                                     {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Package className="w-full h-full p-8 text-slate-300" />}
+                                     <ProductImage src={p.imageUrl} alt={p.name} />
                                      {p.stock <= 0 && <div className="absolute inset-0 bg-slate-900/60 z-10 flex items-center justify-center backdrop-blur-[2px]"><span className="text-white font-bold text-xs border border-white/30 bg-black/20 px-3 py-1 rounded-full uppercase tracking-widest">Agotado</span></div>}
                                  </div>
                                  <div className="p-4 flex flex-col flex-1 justify-between w-full">
@@ -985,8 +1027,19 @@ export default function PosApp() {
                                     {filteredProducts.map(p => (
                                         <button key={p.id} onClick={() => initiateAddToCart(p)} className="bg-white rounded-2xl shadow-sm border border-stone-100 overflow-hidden flex flex-col group hover:shadow-lg transition-all text-left relative h-full">
                                             <div className="aspect-square w-full relative bg-[#fdfbf7]">
-                                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Package className="w-full h-full p-8 text-[#d4dcd6]" />}
+                                                <ProductImage src={p.imageUrl} alt={p.name} />
                                                 <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"><Plus className="w-4 h-4 text-[#1e4620]"/></div>
+                                                <div 
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setEditingProduct(p);
+                                                        setProductPriceInput(p.price);
+                                                        setIsProductModalOpen(true);
+                                                    }}
+                                                    className="absolute top-2 left-2 p-1.5 bg-white/90 rounded-full shadow-sm z-20 hover:bg-white text-slate-500 hover:text-teal-600 cursor-pointer"
+                                                >
+                                                    <Pencil className="w-4 h-4" />
+                                                </div>
                                             </div>
                                             <div className="p-3 flex flex-col flex-1 justify-between">
                                                 <span className="font-bold text-sm line-clamp-2 leading-snug text-[#1e4620] mb-2">{p.name}</span>
@@ -1399,7 +1452,10 @@ export default function PosApp() {
               <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
                   {/* Dynamic Header based on transaction type (Sale vs Purchase) */}
                   <div className={`p-6 text-white ${selectedPaymentTx.type === 'sale' ? 'bg-[#1e4620]' : 'bg-[#d97706]'}`}>
-                      <h2 className="font-serif font-bold text-2xl">{selectedPaymentTx.type === 'sale' ? 'Cobrar' : 'Pagar'}</h2>
+                      <div className="flex justify-between items-center">
+                          <h2 className="font-serif font-bold text-2xl">{selectedPaymentTx.type === 'sale' ? 'Cobrar' : 'Pagar'}</h2>
+                          <button onClick={() => setPaymentModalOpen(false)} className="p-1 bg-white/20 rounded-full hover:bg-white/30"><X className="w-5 h-5"/></button>
+                      </div>
                       <p className="opacity-80 text-sm mt-1">{selectedPaymentTx.clientId}</p>
                   </div>
                   <div className="flex-1 overflow-y-auto p-6 bg-[#fdfbf7]">
@@ -1410,20 +1466,86 @@ export default function PosApp() {
                           })}
                       </div>
                       {selectedPaymentIndex !== null && (
-                          <div className="bg-white p-5 rounded-2xl shadow-sm border border-stone-100 animate-in slide-in-from-bottom-2">
-                              <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Monto</label>
-                              <MoneyInput className="w-full text-center text-3xl font-black text-[#1e4620] border-b-2 border-stone-200 focus:border-[#d97706] outline-none pb-2 bg-transparent" value={paymentAmountInput} onChange={setPaymentAmountInput} placeholder="$0" autoFocus />
+                          <div className="bg-white p-5 rounded-2xl shadow-sm border border-stone-100 animate-in slide-in-from-bottom-2 space-y-4">
+                              <div>
+                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Monto</label>
+                                  <MoneyInput className="w-full text-center text-3xl font-black text-[#1e4620] border-b-2 border-stone-200 focus:border-[#d97706] outline-none pb-2 bg-transparent" value={paymentAmountInput} onChange={setPaymentAmountInput} placeholder="$0" autoFocus />
+                              </div>
+                              
+                              {/* Payment Method Selection */}
+                              <div>
+                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Medio de Pago</label>
+                                  <div className="grid grid-cols-2 gap-2">
+                                      {selectedPaymentTx.type === 'sale' ? (
+                                          <>
+                                              <button onClick={() => setPaymentMethod('Efectivo')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Efectivo' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Efectivo</button>
+                                              <button onClick={() => setPaymentMethod('Transferencia')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Transferencia' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Transferencia</button>
+                                          </>
+                                      ) : (
+                                          <>
+                                              <button onClick={() => setPaymentMethod('TC Itaú')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'TC Itaú' ? 'bg-[#d97706] text-white border-[#d97706]' : 'bg-white text-stone-500 border-stone-200'}`}>TC Itaú</button>
+                                              <button onClick={() => setPaymentMethod('Cuenta Rut')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Cuenta Rut' ? 'bg-[#d97706] text-white border-[#d97706]' : 'bg-white text-stone-500 border-stone-200'}`}>Cuenta Rut</button>
+                                          </>
+                                      )}
+                                  </div>
+                              </div>
+
+                              {/* Receipt Upload (For Sales and Purchases) */}
+                              <div>
+                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Comprobante (Opcional)</label>
+                                  <div className="relative border-2 border-dashed border-stone-200 rounded-xl p-4 text-center hover:bg-stone-50 transition-colors">
+                                      <input type="file" accept="image/*" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => setPaymentReceiptFile(e.target.files[0])} />
+                                      <div className="flex flex-col items-center gap-1 pointer-events-none">
+                                          <Upload className="w-5 h-5 text-stone-400"/>
+                                          <span className="text-xs font-bold text-stone-500">{paymentReceiptFile ? paymentReceiptFile.name : "Subir Foto"}</span>
+                                      </div>
+                                  </div>
+                              </div>
                           </div>
                       )}
                   </div>
                   <div className="p-6 bg-white border-t border-[#e5e7eb]">
                       {selectedPaymentIndex !== null ? <button onClick={async () => {
                           const amount = parseInt(paymentAmountInput) || 0; if(amount<=0) return;
+                          if (!paymentMethod) { triggerAlert("Falta Datos", "Selecciona un medio de pago", "error"); return; }
+                          
+                          setLoading(true); setProcessingMsg("Registrando pago...");
+                          
+                          let receiptUrl = null;
+                          if (paymentReceiptFile) {
+                              try {
+                                  const storageRef = ref(storage, `receipts/${Date.now()}_${paymentReceiptFile.name}`);
+                                  const snapshot = await uploadBytes(storageRef, paymentReceiptFile);
+                                  receiptUrl = await getDownloadURL(snapshot.ref);
+                              } catch (e) { console.error(e); }
+                          }
+
                           let updatedSchedule = [...selectedPaymentTx.paymentSchedule]; let updatedBalance = selectedPaymentTx.balance;
                           const item = updatedSchedule[selectedPaymentIndex]; const newTotalPaid = (item.paidAmount || 0) + amount;
-                          updatedSchedule[selectedPaymentIndex] = { ...item, paidAmount: newTotalPaid, status: newTotalPaid >= item.amount ? 'paid' : 'partial' }; updatedBalance -= amount;
+                          
+                          // Add payment history entry
+                          const newHistoryEntry = {
+                              amount,
+                              date: Date.now() / 1000,
+                              method: paymentMethod,
+                              receiptUrl
+                          };
+                          
+                          const currentHistory = item.paymentHistory || [];
+                          
+                          updatedSchedule[selectedPaymentIndex] = { 
+                              ...item, 
+                              paidAmount: newTotalPaid, 
+                              status: newTotalPaid >= item.amount ? 'paid' : 'partial',
+                              paymentHistory: [...currentHistory, newHistoryEntry]
+                          }; 
+                          
+                          updatedBalance -= amount;
+                          
                           await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, selectedPaymentTx.id), { paymentSchedule: updatedSchedule, balance: updatedBalance, paymentStatus: updatedBalance <= 0 ? 'paid' : 'partial' });
-                          setPaymentModalOpen(false); triggerAlert("Éxito", "Transacción registrada.", "success");
+                          
+                          setLoading(false); setPaymentModalOpen(false); setPaymentReceiptFile(null); setPaymentMethod('');
+                          triggerAlert("Éxito", "Transacción registrada.", "success");
                       }} className="w-full py-3 bg-[#1e4620] text-white rounded-xl font-bold shadow-lg">Confirmar</button> : <button onClick={() => setPaymentModalOpen(false)} className="w-full py-3 text-stone-400 font-bold">Cancelar</button>}
                   </div>
               </div>
