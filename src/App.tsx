@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Users, Plus, Minus, Trash2, Search, Menu, X, ChevronRight, Truck, History, Receipt, UserPlus, Calendar, Tag, Check, MessageCircle, AlertTriangle, BookOpen, Globe, Repeat, ArrowRight, ArrowLeft, CalendarDays, PackageCheck, ScrollText, DollarSign, Image as ImageIcon, Loader2,  CheckCircle2, Clock, AlertCircle, ShoppingBag, Palette, Globe2, ListChecks, CreditCard, TrendingUp, Wallet, PieChart, BarChart3, ArrowUpRight, ArrowDownRight, Filter, TrendingDown, ClipboardList, Pencil, Upload } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Package, Users, Plus, Minus, Trash2, Search, Menu, X, ChevronRight, Truck, History, Receipt, UserPlus, Calendar, Tag, Check, MessageCircle, AlertTriangle, BookOpen, Globe, Repeat, ArrowRight, ArrowLeft, CalendarDays, PackageCheck, ScrollText, DollarSign, Image as ImageIcon, Loader2,  CheckCircle2, Clock, AlertCircle, ShoppingBag, Palette, Globe2, ListChecks, CreditCard, TrendingUp, Wallet, PieChart, BarChart3, ArrowUpRight, ArrowDownRight, Filter, TrendingDown, ClipboardList, Pencil, Upload, CheckSquare, Square } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, limit, increment, writeBatch, getDocs, where, getDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
@@ -23,13 +23,8 @@ const storage = getStorage(app);
 const APP_ID = "natura-produccion-main";
 
 const BRANDS = ['Natura', 'Avon', 'Cyzone', 'Esika', "L'Bel"];
-const SUPPLY_PROVIDERS = ['Natura', 'Belcorp']; // Agrupación para compras
+const SUPPLY_PROVIDERS = ['Natura', 'Belcorp']; 
 const COURIERS = ['Yo (Directo)', 'Mamá (Puesto Feria)', 'Tía Luisa']; 
-
-// --- THEME CONSTANTS ---
-// Primary Color: Teal/Mint (#0d9488 - tailwind teal-600)
-// Secondary: Emerald/Cyan
-// Background: Slate-50
 
 const generateShortId = () => {
   const number = Math.floor(100 + Math.random() * 900);
@@ -48,7 +43,6 @@ const MoneyInput = ({ value, onChange, placeholder, className, autoFocus, disabl
     return <input type="text" inputMode="numeric" className={className} placeholder={placeholder} value={displayValue} onChange={handleChange} autoFocus={autoFocus} disabled={disabled} />;
 };
 
-// --- OPTIMIZED IMAGE COMPONENT (FIXED ASPECT RATIO) ---
 const ProductImage = ({ src, alt }) => {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
@@ -132,8 +126,8 @@ export default function PosApp() {
   const [supplyPaymentPlan, setSupplyPaymentPlan] = useState('full');
   const [supplyCheckoutData, setSupplyCheckoutData] = useState({ installmentsCount: 3, installmentDates: {} });
 
-  const [paymentMethod, setPaymentMethod] = useState(''); // Estado para medio de pago
-  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); // Estado para archivo de comprobante
+  const [paymentMethod, setPaymentMethod] = useState(''); 
+  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null); 
 
   const [loading, setLoading] = useState(true); 
   const [searchTerm, setSearchTerm] = useState('');
@@ -142,7 +136,6 @@ export default function PosApp() {
   const triggerAlert = (title, message, type = 'error') => { setAlertState({ show: true, title, message, type }); };
     
   const [confirmDeliveryModal, setConfirmDeliveryModal] = useState({ show: false, transaction: null });
-  const [deliveryDateInput, setDeliveryDateInput] = useState(new Date().toISOString().split('T')[0]);
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
@@ -152,9 +145,7 @@ export default function PosApp() {
   const [selectedCourier, setSelectedCourier] = useState('Yo (Directo)');
   const [editingProduct, setEditingProduct] = useState(null);
   const [productPriceInput, setProductPriceInput] = useState(''); 
-  const [receiptDetails, setReceiptDetails] = useState(null);
-  const [productHistory, setProductHistory] = useState([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [receiptDetails, setReceiptDetails] = useState(null); // Used for Order Details Modal
   const [checkInOrder, setCheckInOrder] = useState(null); 
   const [checkInItems, setCheckInItems] = useState([]);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('ALL');
@@ -162,10 +153,18 @@ export default function PosApp() {
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [showClientOptions, setShowClientOptions] = useState(false);
   const clientInputRef = useRef(null);
+  
+  // FINANCES (Por Cobrar) Logic Rebuild
+  const [isFinancesModalOpen, setIsFinancesModalOpen] = useState(false);
+  const [selectedClientFinances, setSelectedClientFinances] = useState(null);
+  const [selectedOrdersToPay, setSelectedOrdersToPay] = useState([]); // Array of IDs
+  const [paymentAmountInput, setPaymentAmountInput] = useState('');
+  
+  // Single Payment Logic (reused for managing payment from Order Details)
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [selectedPaymentTx, setSelectedPaymentTx] = useState(null);
   const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(null); 
-  const [paymentAmountInput, setPaymentAmountInput] = useState('');
+
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [viewingHistoryProduct, setViewingHistoryProduct] = useState(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -186,11 +185,12 @@ export default function PosApp() {
   const [isPurchaseHistoryOpen, setIsPurchaseHistoryOpen] = useState(false);
 
   // --- DASHBOARD FILTER STATES ---
-  const [dashboardDateFilter, setDashboardDateFilter] = useState('month'); // 'day', 'week', 'month', 'custom'
+  const [dashboardDateFilter, setDashboardDateFilter] = useState('month');
   const [dashboardCustomRange, setDashboardCustomRange] = useState({ start: '', end: '' });
 
   // --- ORDER VIEW FILTER STATE ---
-  const [orderViewTab, setOrderViewTab] = useState('pending'); // 'pending', 'ready', 'transit'
+  const [orderViewTab, setOrderViewTab] = useState('pending'); // 'pending', 'ready', 'transit', 'completed'
+  const [paymentFilter, setPaymentFilter] = useState('all'); // 'all', 'paid', 'pending'
 
   // --- DERIVED STATE ---
   const stockAnalysis = useMemo(() => {
@@ -219,7 +219,7 @@ export default function PosApp() {
           endDate.setHours(23, 59, 59, 999);
       } else if (dashboardDateFilter === 'week') {
           const day = startDate.getDay();
-          const diff = startDate.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
+          const diff = startDate.getDate() - day + (day === 0 ? -6 : 1);
           startDate.setDate(diff);
           startDate.setHours(0, 0, 0, 0);
       } else if (dashboardDateFilter === 'month') {
@@ -231,28 +231,22 @@ export default function PosApp() {
           endDate.setHours(23, 59, 59, 999);
       }
 
-      // Filter transactions
       const filteredSales = transactions.filter(t => 
           t.type === 'sale' && 
-          t.date?.seconds && // Safety check
+          t.date?.seconds && 
           t.date.seconds * 1000 >= startDate.getTime() && 
           t.date.seconds * 1000 <= endDate.getTime()
       );
 
       const totalSales = filteredSales.reduce((sum, t) => sum + t.total, 0);
-      // Total Cost (FIFO)
       const totalCost = filteredSales.reduce((sum, t) => sum + (t.totalCost || 0), 0);
-      // Real Margin
       const totalMargin = totalSales - totalCost;
       const marginPercent = totalSales > 0 ? (totalMargin / totalSales) * 100 : 0;
-
-      // Order Stats (Logistics)
       const pendingStock = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'pending_order').length;
       const readyToDeliver = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'pending_delivery').length;
       const inTransit = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'in_transit').length;
       const toArrive = transactions.filter(t => t.type === 'order' && t.saleStatus === 'pending_arrival').length;
 
-      // Daily Trend
       const trendMap = {};
       filteredSales.forEach(t => {
           if(!t.date?.seconds) return;
@@ -261,7 +255,6 @@ export default function PosApp() {
       });
       const trendData = Object.entries(trendMap).map(([date, total]) => ({ date, total })).sort((a,b) => a.date.localeCompare(b.date)); 
 
-      // Top Products
       const productMap = {};
       filteredSales.forEach(t => {
           (t.items || []).forEach(item => {
@@ -272,7 +265,6 @@ export default function PosApp() {
       });
       const topProducts = Object.values(productMap).sort((a, b) => b.qty - a.qty).slice(0, 5);
 
-      // Top Clients
       const clientMap = {};
       filteredSales.forEach(t => {
           const cName = getClientName(t.clientId);
@@ -285,27 +277,28 @@ export default function PosApp() {
       return { totalSales, totalCost, totalMargin, marginPercent, pendingStock, readyToDeliver, inTransit, toArrive, trendData, topProducts, topClients };
   }, [transactions, batches, dashboardDateFilter, dashboardCustomRange, clients]); 
 
-  const getOrderTag = (t) => {
-      let isStock = false;
-      let isReserved = false;
-      let hasPending = false;
-      (t.items || []).forEach(i => {
-          if (i.status === 'delivered') isStock = true; 
-          if (i.status === 'reserved') isReserved = true; 
-          if (i.status === 'pending') hasPending = true;
-      });
-      if (hasPending) return { label: 'Por Encargar', color: 'bg-slate-100 text-slate-500', icon: BookOpen };
-      if (isReserved) return { label: 'En Stock', color: 'bg-teal-100 text-teal-700', icon: CheckCircle2 };
-      if (isStock) return { label: 'Entregado', color: 'bg-emerald-100 text-emerald-700', icon: PackageCheck };
-      return { label: 'Entregado', color: 'bg-slate-100 text-slate-500', icon: Check };
+  const getPaymentStatusBadge = (tx) => {
+      if (tx.paymentStatus === 'paid') return <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Pagado</span>;
+      if (tx.paymentStatus === 'partial') return <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1"><Clock className="w-3 h-3"/> Parcial</span>;
+      return <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1"><AlertCircle className="w-3 h-3"/> Pago Pendiente</span>;
   };
 
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
-        else await signInAnonymously(auth);
-      } catch (error) { try { await signInAnonymously(auth); } catch (anonError) { console.error("Anon failed", anonError); } }
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+           throw new Error('No initial token provided');
+        }
+      } catch (error) {
+        console.warn("Fallo autenticación con token custom (posible mismatch), usando anónimo:", error);
+        try {
+            await signInAnonymously(auth);
+        } catch (anonError) {
+            console.error("Fallo autenticación anónima:", anonError);
+        }
+      }
     };
     initAuth();
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => { if (currentUser) { setUser(currentUser); setLoading(false); setProcessingMsg(''); } else { setLoading(true); } });
@@ -324,17 +317,27 @@ export default function PosApp() {
     return () => { unsubProducts(); unsubClients(); unsubCategories(); unsubTrans(); unsubCycles(); unsubBatches(); };
   }, [user]);
 
+  // Effect to update payment total when selections change in finances modal
+  useEffect(() => {
+      if (selectedClientFinances && selectedOrdersToPay.length > 0) {
+          const totalToPay = selectedClientFinances.orders
+              .filter(o => selectedOrdersToPay.includes(o.id))
+              .reduce((acc, order) => acc + order.balance, 0);
+          setPaymentAmountInput(totalToPay);
+      } else {
+          setPaymentAmountInput('');
+      }
+  }, [selectedOrdersToPay, selectedClientFinances]);
+
   // --- ACTIONS ---
 
   const calculateFIFO = async (productId, qtyNeeded) => {
-      // FIX: Query without unsupported inequality filter, and manual sort
       const q = query(
           collection(db, `artifacts/${APP_ID}/public/data/inventory_batches`), 
           where('productId', '==', productId)
       );
       const snapshot = await getDocs(q);
       
-      // Sort and filter in memory to avoid index requirement errors
       const batches = snapshot.docs
           .map(d => ({...d.data(), id: d.id}))
           .filter(b => b.remainingQty > 0)
@@ -422,7 +425,7 @@ export default function PosApp() {
 
         batch.set(doc(db, `artifacts/${APP_ID}/public/data/transactions`, newTransId), transactionData);
         await batch.commit();
-        clearCart(); setIsCheckoutModalOpen(false); triggerAlert("Éxito", "Venta registrada.", "success");
+        clearCart(); setIsCheckoutModalOpen(false); triggerAlert("Éxito", "Registrar Venta", "success");
     } catch (error) { console.error(error); triggerAlert("Error", "No se pudo guardar.", "error"); } finally { setLoading(false); setProcessingMsg(''); }
   };
 
@@ -439,12 +442,14 @@ export default function PosApp() {
 
   const startDeliveryProcess = async () => {
       if (!deliveryTransaction) return;
-      if (deliveryTransaction.paymentPlanType === 'full' && deliveryTransaction.balance > 0) {
-          triggerAlert("Pago Pendiente", "Este pedido es al contado y aún tiene deuda. No se puede entregar.", "error");
+      
+      // LOGIC: If 'Yo (Directo)', enforce payment check.
+      if (selectedCourier === 'Yo (Directo)' && deliveryTransaction.balance > 0) {
+          triggerAlert("Pago Pendiente", "Para entregar usted mismo, el pedido debe estar pagado completo.", "error");
           return;
       }
 
-      setLoading(true); setProcessingMsg(selectedCourier === 'Yo (Directo)' ? "Cerrando Venta..." : "Enviando a Reparto...");
+      setLoading(true); setProcessingMsg(selectedCourier === 'Yo (Directo)' ? "Finalizando Venta..." : "Enviando a Reparto...");
       try {
           const batch = writeBatch(db); 
           const updatedItems = (deliveryTransaction.items || []).map(i => i.status === 'reserved' ? {...i, status: 'delivered'} : i);
@@ -453,6 +458,22 @@ export default function PosApp() {
           await batch.commit(); setIsDeliveryModalOpen(false); setDeliveryTransaction(null); triggerAlert("Actualizado", "Estado actualizado.", "success");
       } catch (error) { console.error(error); triggerAlert("Error", "Fallo proceso.", "error"); } finally { setLoading(false); setProcessingMsg(''); }
   };
+
+  const finalizeDelivery = async (transaction) => {
+     if (transaction.balance > 0) {
+        triggerAlert("Pago Pendiente", "No se puede marcar como entregado si no está pagado.", "error");
+        return;
+     }
+     setLoading(true); setProcessingMsg("Finalizando...");
+     try {
+         await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, transaction.id), {
+             saleStatus: 'completed',
+             deliveredAt: { seconds: Date.now() / 1000 }
+         });
+         triggerAlert("Listo", "Pedido marcado como entregado.", "success");
+         setReceiptDetails(null);
+     } catch(e) { console.error(e); triggerAlert("Error", "Falló.", "error"); } finally { setLoading(false); setProcessingMsg(''); }
+  }
 
   const removeFromCart = (index) => setCart(prev => prev.filter((_, i) => i !== index));
   const updateQty = (index, d) => setCart(prev => prev.map((p, i) => { if (i === index) { const n = Math.max(1, p.qty + d); return { ...p, qty: n }; } return p; }));
@@ -615,22 +636,84 @@ export default function PosApp() {
   const salesHistory = useMemo(() => transactions.filter(t => t.type === 'sale' && (t.saleStatus === 'completed' || t.saleStatus === 'delivered')), [transactions]);
   const purchaseHistory = useMemo(() => transactions.filter(t => (t.type === 'order' || t.type === 'stock_entry')), [transactions]);
 
-  const getBrandGradient = (brand) => {
-      const b = brand.toLowerCase();
-      if(b.includes('natura')) return 'from-orange-400 to-amber-500';
-      if(b.includes('avon')) return 'from-pink-500 to-rose-600';
-      return 'from-purple-500 to-indigo-600';
+  // Handle "Pay All" or Pay Selected for Finances
+  const handlePaySelectedOrders = async () => {
+    if (selectedOrdersToPay.length === 0) return;
+    const amount = parseInt(paymentAmountInput) || 0;
+    if (amount <= 0 || !paymentMethod) { triggerAlert("Error", "Ingresa monto y método.", "error"); return; }
+    
+    setLoading(true); setProcessingMsg("Procesando Pago...");
+    
+    // Distribute payment across selected orders (simplest: pay oldest first or evenly? User said "pay total". 
+    // We will apply to the first order, then remainder to next, etc.)
+    
+    try {
+        let remainingPayment = amount;
+        const batch = writeBatch(db);
+        let receiptUrl = null;
+        if (paymentReceiptFile) {
+            const snap = await uploadBytes(ref(storage, `receipts/${Date.now()}_${paymentReceiptFile.name}`), paymentReceiptFile);
+            receiptUrl = await getDownloadURL(snap.ref);
+        }
+
+        // Sort selected orders by date ascending to pay oldest first
+        const ordersToPay = transactions.filter(t => selectedOrdersToPay.includes(t.id)).sort((a,b) => (a.date.seconds - b.date.seconds));
+
+        for (const order of ordersToPay) {
+            if (remainingPayment <= 0) break;
+            if (order.balance <= 0) continue;
+
+            const payHere = Math.min(remainingPayment, order.balance);
+            const newHistoryEntry = { amount: payHere, date: Date.now() / 1000, method: paymentMethod, receiptUrl };
+            
+            // Logic to update schedule items - simplified for bulk pay: just reduce balance and add to history log of the FIRST unpaid schedule item
+            let updatedSchedule = [...(order.paymentSchedule || [])];
+            let scheduleRemaining = payHere;
+            
+            updatedSchedule = updatedSchedule.map(item => {
+                if (scheduleRemaining <= 0 || item.status === 'paid') return item;
+                const itemBalance = item.amount - (item.paidAmount || 0);
+                const payItem = Math.min(scheduleRemaining, itemBalance);
+                scheduleRemaining -= payItem;
+                const newPaidAmount = (item.paidAmount || 0) + payItem;
+                return {
+                    ...item,
+                    paidAmount: newPaidAmount,
+                    status: newPaidAmount >= item.amount ? 'paid' : 'partial',
+                    paymentHistory: [...(item.paymentHistory || []), { ...newHistoryEntry, amount: payItem }]
+                };
+            });
+            
+            const newBalance = order.balance - payHere;
+            batch.update(doc(db, `artifacts/${APP_ID}/public/data/transactions`, order.id), {
+                paymentSchedule: updatedSchedule,
+                balance: newBalance,
+                paymentStatus: newBalance <= 0 ? 'paid' : 'partial'
+            });
+            
+            remainingPayment -= payHere;
+        }
+
+        await batch.commit();
+        triggerAlert("Pago Exitoso", "Se han actualizado los pedidos seleccionados.", "success");
+        setIsFinancesModalOpen(false);
+        setSelectedClientFinances(null);
+        setSelectedOrdersToPay([]);
+        setPaymentAmountInput('');
+    } catch(e) { console.error(e); triggerAlert("Error", "Fallo al pagar.", "error"); }
+    finally { setLoading(false); setProcessingMsg(''); }
   }
+
 
   if (loading && !user) return <div className="flex h-screen items-center justify-center bg-slate-50 text-teal-900 font-serif font-bold text-xl"><Loader2 className="animate-spin mr-2"/> Cargando Sistema...</div>;
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-800 font-sans overflow-hidden relative">
-      {/* ALERTS & MODALS LAYER */}
-      {loading && processingMsg && <div className="fixed inset-0 bg-teal-900/80 z-[110] flex flex-col items-center justify-center text-white backdrop-blur-sm"><Loader2 className="w-12 h-12 animate-spin mb-4"/><span className="font-bold text-xl">{processingMsg}</span></div>}
+      {/* ALERTS & MODALS LAYER - Highest Z-Index */}
+      {loading && processingMsg && <div className="fixed inset-0 bg-teal-900/80 z-[200] flex flex-col items-center justify-center text-white backdrop-blur-sm"><Loader2 className="w-12 h-12 animate-spin mb-4"/><span className="font-bold text-xl">{processingMsg}</span></div>}
       
       {alertState.show && (
-        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-[210] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className={`bg-white rounded-3xl p-6 w-full max-w-xs text-center border-t-8 ${alertState.type === 'success' ? 'border-teal-500' : 'border-rose-500'}`}>
                 <h3 className="text-xl font-bold mb-2 font-serif text-teal-900">{alertState.title}</h3>
                 <p className="text-sm text-slate-500 mb-6">{alertState.message}</p>
@@ -679,7 +762,7 @@ export default function PosApp() {
 
       <main className={`flex-1 overflow-hidden relative flex flex-col ${view !== 'pos' ? 'overflow-y-auto' : ''} md:pt-0 pt-14`}>
         
-        {/* === VIEW: DASHBOARD (NEW UX) === */}
+        {/* === VIEW: DASHBOARD === */}
         {view === 'dashboard' && (
             <div className="p-6 h-full overflow-y-auto bg-slate-50">
                 <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
@@ -698,9 +781,7 @@ export default function PosApp() {
                     </div>
                 )}
 
-                {/* NEW METRICS CARDS */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    {/* Card 1: Ventas */}
                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 relative overflow-hidden group">
                         <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110"></div>
                         <div className="relative z-10">
@@ -709,7 +790,6 @@ export default function PosApp() {
                             <h3 className="text-3xl font-black text-slate-800 mt-1">${formatMoney(dashboardData.totalSales)}</h3>
                         </div>
                     </div>
-                    {/* Card 2: Costos */}
                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 relative overflow-hidden group">
                         <div className="absolute top-0 right-0 w-24 h-24 bg-rose-50 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110"></div>
                         <div className="relative z-10">
@@ -718,7 +798,6 @@ export default function PosApp() {
                             <h3 className="text-3xl font-black text-slate-800 mt-1">${formatMoney(dashboardData.totalCost)}</h3>
                         </div>
                     </div>
-                    {/* Card 3: Margen */}
                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 relative overflow-hidden group">
                         <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-50 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110"></div>
                         <div className="relative z-10">
@@ -730,7 +809,6 @@ export default function PosApp() {
                             </div>
                         </div>
                     </div>
-                    {/* Card 4: Inventario */}
                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 relative overflow-hidden group">
                         <div className="absolute top-0 right-0 w-24 h-24 bg-violet-50 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110"></div>
                         <div className="relative z-10">
@@ -741,83 +819,23 @@ export default function PosApp() {
                     </div>
                 </div>
 
-                {/* NEW: LOGISTICS KPIs */}
-                <h3 className="font-bold text-lg text-teal-900 mb-4 flex items-center gap-2">Estado de Pedidos</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                     <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                         <div className="text-2xl font-black text-slate-700">{dashboardData.pendingStock}</div>
-                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Por Encargar</div>
-                     </div>
-                     <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                         <div className="text-2xl font-black text-amber-600">{dashboardData.toArrive}</div>
-                         <div className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mt-1">Por Llegar</div>
-                     </div>
-                     <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                         <div className="text-2xl font-black text-emerald-600">{dashboardData.readyToDeliver}</div>
-                         <div className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest mt-1">Por Entregar</div>
-                     </div>
-                     <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                         <div className="text-2xl font-black text-orange-600">{dashboardData.inTransit}</div>
-                         <div className="text-[10px] font-bold text-orange-500 uppercase tracking-widest mt-1">En Reparto</div>
-                     </div>
-                </div>
-                
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                    {/* Daily Trend Chart */}
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 lg:col-span-2">
-                        <h3 className="font-bold text-lg text-teal-900 mb-6 flex items-center gap-2"><BarChart3 className="w-5 h-5"/> Tendencia de Ventas</h3>
-                        <div className="h-48 flex items-end gap-2 overflow-x-auto pb-2 no-scrollbar px-2">
-                             {dashboardData.trendData.map((item, idx) => {
-                                 const maxVal = Math.max(...dashboardData.trendData.map(d => d.total), 1);
-                                 const heightPercent = (item.total / maxVal) * 100;
-                                 return (
-                                     <div key={idx} className="h-full flex flex-col justify-end items-center gap-2 group min-w-[40px] flex-1 cursor-pointer">
-                                         <div className="w-full bg-teal-500 rounded-t-lg opacity-80 group-hover:opacity-100 transition-all relative group-hover:bg-teal-600" style={{ height: `${Math.max(heightPercent, 5)}%` }}>
-                                             <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-lg z-10">${formatMoney(item.total)}</div>
-                                         </div>
-                                         <div className="text-[10px] font-bold text-slate-400">{item.date.split('/')[0]}</div>
-                                     </div>
-                                 )
-                             })}
-                             {dashboardData.trendData.length === 0 && <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">Sin datos para el periodo.</div>}
-                        </div>
-                    </div>
-
-                    {/* Top Products */}
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                        <h3 className="font-bold text-lg text-teal-900 mb-4 flex items-center gap-2"><ArrowUpRight className="w-5 h-5 text-emerald-500"/> Top Productos</h3>
-                        <div className="space-y-4">
-                            {dashboardData.topProducts.map((p, idx) => (
-                                <div key={idx} className="flex justify-between items-center text-sm">
-                                    <div className="flex items-center gap-3">
-                                        <div className="font-black text-slate-300 w-4 text-center">{idx+1}</div>
-                                        <div className="font-bold text-slate-700 line-clamp-1 max-w-[140px]">{p.name}</div>
-                                    </div>
-                                    <div className="font-bold text-teal-600 bg-teal-50 px-2 py-1 rounded-lg text-xs">{p.qty} un.</div>
-                                </div>
-                            ))}
-                            {dashboardData.topProducts.length === 0 && <div className="text-slate-400 text-xs">Sin datos.</div>}
-                        </div>
-                    </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                        <h3 className="font-bold text-lg text-teal-900 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-blue-500"/> Top Clientes</h3>
-                        <div className="space-y-4">
-                            {dashboardData.topClients.map((c, idx) => (
-                                <div key={idx} className="flex justify-between items-center text-sm">
-                                    <div className="flex items-center gap-3"><div className="font-black text-slate-300 w-4 text-center">{idx+1}</div><div className="font-bold text-slate-700">{c.name}</div></div>
-                                    <div className="font-bold text-slate-900">${formatMoney(c.total)}</div>
-                                </div>
-                            ))}
-                            {dashboardData.topClients.length === 0 && <div className="text-slate-400 text-xs">Sin datos.</div>}
-                        </div>
-                    </div>
-                    <div className="bg-gradient-to-br from-teal-800 to-teal-900 p-8 rounded-3xl shadow-lg text-white relative overflow-hidden flex flex-col justify-center">
-                        <div className="relative z-10"><h3 className="font-serif font-bold text-2xl mb-2">Acceso Rápido</h3><p className="opacity-80 mb-6">Gestiona tu negocio de forma eficiente.</p><div className="flex gap-3"><button onClick={() => setView('pos')} className="bg-white text-teal-900 px-6 py-3 rounded-xl font-bold hover:bg-slate-100 shadow-lg">Nueva Venta</button><button onClick={() => setView('purchases')} className="bg-teal-600 border border-teal-500 text-white px-6 py-3 rounded-xl font-bold hover:bg-teal-500 shadow-lg">Comprar Stock</button></div></div>
-                        <Globe className="absolute -right-10 -bottom-10 w-64 h-64 text-white/5"/>
-                    </div>
+                      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
+                          <div className="text-2xl font-black text-slate-700">{dashboardData.pendingStock}</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Por Encargar</div>
+                      </div>
+                      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
+                          <div className="text-2xl font-black text-amber-600">{dashboardData.toArrive}</div>
+                          <div className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mt-1">Por Llegar</div>
+                      </div>
+                      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
+                          <div className="text-2xl font-black text-emerald-600">{dashboardData.readyToDeliver}</div>
+                          <div className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest mt-1">Por Entregar</div>
+                      </div>
+                      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
+                          <div className="text-2xl font-black text-orange-600">{dashboardData.inTransit}</div>
+                          <div className="text-[10px] font-bold text-orange-500 uppercase tracking-widest mt-1">En Reparto</div>
+                      </div>
                 </div>
             </div>
         )}
@@ -871,7 +889,7 @@ export default function PosApp() {
                                 ))}
                             </div>
                             <button onClick={() => { setIsCheckoutModalOpen(true); }} className="w-full h-14 bg-teal-600 hover:bg-teal-700 text-white rounded-2xl font-bold flex justify-between px-8 items-center shadow-lg hover:shadow-teal-500/30 transition-all">
-                                <span className="flex items-center gap-2 text-lg">Ir a Pagar <ChevronRight className="w-5 h-5"/></span>
+                                <span className="flex items-center gap-2 text-lg">Registrar Venta <ChevronRight className="w-5 h-5"/></span>
                                 <span className="text-xl font-serif">${formatMoney(cartTotal)}</span>
                             </button>
                         </div>
@@ -883,8 +901,6 @@ export default function PosApp() {
         {/* === VIEW: PURCHASES (STOCK & SUPPLY) === */}
         {view === 'purchases' && (
             <div className="flex flex-col h-full bg-slate-50">
-                
-                {/* 1. TOP SECTION: RECEPTION WIDGET (HIDDEN IN SHOPPING MODE) */}
                 {!supplyMode && (
                     <div className="p-6 pb-0 animate-in slide-in-from-top duration-300">
                         <div className="flex justify-between items-center mb-4">
@@ -929,99 +945,52 @@ export default function PosApp() {
                     </div>
                 )}
 
-                {/* 2. MAIN CONTENT AREA */}
                 <div className={`flex-1 overflow-y-auto ${!supplyMode ? 'px-6 pb-24' : 'px-0 pb-0'} transition-all`}>
                     
                     {!supplyMode ? (
-                        // --- DASHBOARD: SELECT MODE ---
                         <div className="animate-in slide-in-from-bottom duration-500 px-6">
                             <h3 className="text-sm font-bold text-slate-400 uppercase mb-4 tracking-wider">Nueva Compra</h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {/* CARD 1: CYCLE */}
                                 <button onClick={() => setSupplyMode('selection_cycle')} className="relative h-48 rounded-3xl overflow-hidden shadow-lg group text-left">
                                     <div className="absolute inset-0 bg-gradient-to-br from-rose-400 to-orange-400 opacity-90 transition-opacity group-hover:opacity-100"></div>
                                     <div className="absolute inset-0 p-6 flex flex-col justify-between text-white">
-                                        <div className="bg-white/20 w-12 h-12 rounded-2xl flex items-center justify-center backdrop-blur-sm">
-                                            <BookOpen className="w-6 h-6 text-white"/>
-                                        </div>
-                                        <div>
-                                            <h3 className="text-2xl font-serif font-bold mb-1">Compra por Ciclo</h3>
-                                            <p className="text-sm text-white/80 font-medium">Revista, Preventa y Ofertas</p>
-                                        </div>
+                                        <div className="bg-white/20 w-12 h-12 rounded-2xl flex items-center justify-center backdrop-blur-sm"><BookOpen className="w-6 h-6 text-white"/></div>
+                                        <div><h3 className="text-2xl font-serif font-bold mb-1">Compra por Ciclo</h3><p className="text-sm text-white/80 font-medium">Revista, Preventa y Ofertas</p></div>
                                         <ChevronRight className="absolute bottom-6 right-6 w-8 h-8 opacity-50 group-hover:opacity-100 group-hover:translate-x-2 transition-all"/>
                                     </div>
                                 </button>
-
-                                {/* CARD 2: WEB */}
                                 <button onClick={() => setSupplyMode('selection_web')} className="relative h-48 rounded-3xl overflow-hidden shadow-lg group text-left">
                                     <div className="absolute inset-0 bg-gradient-to-br from-cyan-500 to-blue-600 opacity-90 transition-opacity group-hover:opacity-100"></div>
                                     <div className="absolute inset-0 p-6 flex flex-col justify-between text-white">
-                                        <div className="bg-white/20 w-12 h-12 rounded-2xl flex items-center justify-center backdrop-blur-sm">
-                                            <Globe className="w-6 h-6 text-white"/>
-                                        </div>
-                                        <div>
-                                            <h3 className="text-2xl font-serif font-bold mb-1">Compra Web</h3>
-                                            <p className="text-sm text-white/80 font-medium">Online, Cyber y Liquidación</p>
-                                        </div>
+                                        <div className="bg-white/20 w-12 h-12 rounded-2xl flex items-center justify-center backdrop-blur-sm"><Globe className="w-6 h-6 text-white"/></div>
+                                        <div><h3 className="text-2xl font-serif font-bold mb-1">Compra Web</h3><p className="text-sm text-white/80 font-medium">Online, Cyber y Liquidación</p></div>
                                         <ChevronRight className="absolute bottom-6 right-6 w-8 h-8 opacity-50 group-hover:opacity-100 group-hover:translate-x-2 transition-all"/>
                                     </div>
                                 </button>
                             </div>
-
-                            <div className="mt-8">
-                                <h3 className="text-sm font-bold text-slate-400 uppercase mb-4 tracking-wider">Herramientas</h3>
-                                <div className="flex gap-4">
-                                     <button onClick={() => setIsCategoryModalOpen(true)} className="flex items-center gap-2 px-5 py-3 bg-white rounded-xl border border-slate-200 font-bold text-slate-600 hover:border-teal-500 hover:text-teal-700 shadow-sm"><Tag className="w-4 h-4"/> Categorías</button>
-                                     <button onClick={() => {setViewingHistoryProduct(null); setIsHistoryModalOpen(true);}} className="flex items-center gap-2 px-5 py-3 bg-white rounded-xl border border-slate-200 font-bold text-slate-600 hover:border-teal-500 hover:text-teal-700 shadow-sm"><History className="w-4 h-4"/> Historial Global</button>
-                                </div>
-                            </div>
                         </div>
                     ) : supplyMode.startsWith('selection') ? (
-                        // --- BRAND SELECTION ---
                         <div className="animate-in slide-in-from-right duration-300 px-6">
                              <button onClick={() => setSupplyMode(null)} className="flex items-center gap-2 text-slate-400 font-bold mb-6 hover:text-teal-700"><ArrowLeft className="w-4 h-4"/> Volver</button>
                              <h3 className="text-2xl font-serif font-bold text-teal-900 mb-2">Elige la Marca</h3>
-                             <p className="text-slate-500 mb-6">¿De qué marca es el pedido que vas a ingresar?</p>
-                             
                              <div className="grid grid-cols-2 gap-4">
                                  {SUPPLY_PROVIDERS.map(brand => (
-                                     <button key={brand} 
-                                        onClick={() => {
-                                            if (supplyMode === 'selection_cycle') {
-                                                setTempCycleName('');
-                                                setCycleNameModal({ show: true, brand });
-                                            } else {
-                                                setSupplyConfig({ type: 'web', brand });
-                                                setSupplyMode('shopping');
-                                            }
-                                        }}
-                                        className={`p-6 rounded-2xl bg-gradient-to-br ${brand === 'Natura' ? 'from-orange-400 to-amber-500' : 'from-purple-500 to-indigo-600'} text-white font-bold text-xl shadow-lg hover:scale-[1.02] transition-transform text-left relative overflow-hidden`}
-                                     >
-                                         <span className="relative z-10">{brand}</span>
-                                         <Palette className="absolute -bottom-4 -right-4 w-24 h-24 text-white/20 rotate-12"/>
-                                     </button>
+                                     <button key={brand} onClick={() => { if (supplyMode === 'selection_cycle') { setTempCycleName(''); setCycleNameModal({ show: true, brand }); } else { setSupplyConfig({ type: 'web', brand }); setSupplyMode('shopping'); } }} className={`p-6 rounded-2xl bg-gradient-to-br ${brand === 'Natura' ? 'from-orange-400 to-amber-500' : 'from-purple-500 to-indigo-600'} text-white font-bold text-xl shadow-lg hover:scale-[1.02] transition-transform text-left relative overflow-hidden`}><span className="relative z-10">{brand}</span><Palette className="absolute -bottom-4 -right-4 w-24 h-24 text-white/20 rotate-12"/></button>
                                  ))}
                              </div>
                         </div>
                     ) : (
-                        // --- SHOPPING MODE (CATALOG - FULL SCREEN) ---
                         <div className="animate-in slide-in-from-right duration-300 h-full flex flex-col bg-white">
-                            {/* Header for Shopping */}
                             <div className="bg-white p-4 border-b border-stone-100 shadow-sm sticky top-0 z-20">
                                 <div className="flex justify-between items-center mb-4">
                                     <div className="flex items-center gap-3">
                                         <button onClick={() => { setSupplyMode(null); setSupplyConfig(null); clearCart(); }} className="p-2 hover:bg-stone-100 rounded-full"><ArrowLeft className="w-5 h-5 text-stone-500"/></button>
-                                        <div>
-                                            <div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">{supplyConfig.type === 'cycle' ? 'Pedido Ciclo' : 'Pedido Web'}</div>
-                                            <div className="font-bold text-xl text-[#1e4620]">{supplyConfig.brand} {supplyConfig.cycleName ? `• ${supplyConfig.cycleName}` : ''}</div>
-                                        </div>
+                                        <div><div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">{supplyConfig.type === 'cycle' ? 'Pedido Ciclo' : 'Pedido Web'}</div><div className="font-bold text-xl text-[#1e4620]">{supplyConfig.brand} {supplyConfig.cycleName ? `• ${supplyConfig.cycleName}` : ''}</div></div>
                                     </div>
                                     {cart.length > 0 && <div className="font-black text-xl text-[#d97706]">${formatMoney(cartTotal)}</div>}
                                 </div>
                                 <input className="w-full bg-[#fdfbf7] border border-stone-200 rounded-xl px-4 py-3 font-bold text-sm outline-none focus:border-[#d97706]" placeholder={`Buscar en ${supplyConfig.brand}...`} value={searchTerm} onChange={e => setSearchTerm(e.target.value)} autoFocus/>
                             </div>
-
-                            {/* Catalog Grid - RESTORED TO SQUARES: Back to 2/3/4 cols but full screen */}
                             <div className="flex-1 overflow-y-auto p-6 pb-32">
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                                     {filteredProducts.map(p => (
@@ -1029,17 +998,6 @@ export default function PosApp() {
                                             <div className="aspect-square w-full relative bg-[#fdfbf7]">
                                                 <ProductImage src={p.imageUrl} alt={p.name} />
                                                 <div className="absolute top-2 right-2 bg-white/90 p-1.5 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"><Plus className="w-4 h-4 text-[#1e4620]"/></div>
-                                                <div 
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setEditingProduct(p);
-                                                        setProductPriceInput(p.price);
-                                                        setIsProductModalOpen(true);
-                                                    }}
-                                                    className="absolute top-2 left-2 p-1.5 bg-white/90 rounded-full shadow-sm z-20 hover:bg-white text-slate-500 hover:text-teal-600 cursor-pointer"
-                                                >
-                                                    <Pencil className="w-4 h-4" />
-                                                </div>
                                             </div>
                                             <div className="p-3 flex flex-col flex-1 justify-between">
                                                 <span className="font-bold text-sm line-clamp-2 leading-snug text-[#1e4620] mb-2">{p.name}</span>
@@ -1049,17 +1007,11 @@ export default function PosApp() {
                                     ))}
                                 </div>
                             </div>
-
-                            {/* Sticky Cart Footer for Supply (CLICKABLE NOW) */}
                             {cart.length > 0 && (
                                 <div className="fixed bottom-0 md:left-64 left-0 right-0 bg-white p-4 border-t border-[#e5e7eb] shadow-[0_-5px_20px_rgba(0,0,0,0.1)] z-30">
                                     <div className="max-w-4xl mx-auto flex gap-4 items-center">
                                          <button onClick={() => setIsCartDetailsOpen(true)} className="flex-1 text-left flex items-center justify-between bg-[#fdfbf7] p-3 rounded-xl border border-stone-200 hover:border-[#1e4620] transition-colors">
-                                             <div>
-                                                 <div className="text-xs text-stone-400 font-bold uppercase">{cart.length} productos</div>
-                                                 <div className="text-lg font-black text-[#1e4620]">${formatMoney(cartTotal)}</div>
-                                             </div>
-                                             <ListChecks className="w-5 h-5 text-stone-400"/>
+                                             <div><div className="text-xs text-stone-400 font-bold uppercase">{cart.length} productos</div><div className="text-lg font-black text-[#1e4620]">${formatMoney(cartTotal)}</div></div><ListChecks className="w-5 h-5 text-stone-400"/>
                                          </button>
                                          <button onClick={() => setIsCartDetailsOpen(true)} className="px-6 py-4 bg-[#1e4620] text-white rounded-xl font-bold shadow-lg hover:bg-[#153316]">Confirmar</button>
                                     </div>
@@ -1077,15 +1029,19 @@ export default function PosApp() {
                 <div className="p-6 pb-2">
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="font-serif font-bold text-3xl text-teal-900">Pedidos</h2>
-                        <button onClick={() => setIsSalesHistoryOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold text-xs hover:text-teal-700 hover:border-teal-200 transition-colors shadow-sm">
-                            <History className="w-4 h-4"/> Historial
-                        </button>
+                        {/* --- PAYMENT FILTER --- */}
+                        <div className="flex bg-white rounded-xl border border-slate-200 p-1">
+                            <button onClick={() => setPaymentFilter('all')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${paymentFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-100'}`}>Todos</button>
+                            <button onClick={() => setPaymentFilter('paid')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${paymentFilter === 'paid' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-100'}`}>Pagados</button>
+                            <button onClick={() => setPaymentFilter('pending')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${paymentFilter === 'pending' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:bg-slate-100'}`}>Pendientes</button>
+                        </div>
                     </div>
                     {/* TABS */}
                     <div className="flex p-1 bg-white border border-slate-200 rounded-xl shadow-sm mb-4">
                         <button onClick={() => setOrderViewTab('pending')} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${orderViewTab === 'pending' ? 'bg-amber-100 text-amber-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Por Encargar</button>
                         <button onClick={() => setOrderViewTab('ready')} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${orderViewTab === 'ready' ? 'bg-emerald-100 text-emerald-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Por Entregar</button>
                         <button onClick={() => setOrderViewTab('transit')} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${orderViewTab === 'transit' ? 'bg-orange-100 text-orange-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>En Reparto</button>
+                        <button onClick={() => setOrderViewTab('completed')} className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${orderViewTab === 'completed' ? 'bg-blue-100 text-blue-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Entregados</button>
                     </div>
                 </div>
 
@@ -1093,65 +1049,84 @@ export default function PosApp() {
                     <div className="max-w-4xl mx-auto space-y-4">
                         {/* 1. PENDIENTES */}
                         {orderViewTab === 'pending' && (
-                             <div className="animate-in slide-in-from-right">
-                                 <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 pl-1">Falta Stock</div>
-                                 <div className="space-y-3">
-                                     {transactions.filter(t => t.saleStatus === 'pending_order').map(t => (
-                                         <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-amber-300 transition-all group">
-                                             <div className="flex justify-between mb-2">
-                                                 <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
-                                                 <span className="font-black text-slate-600">${formatMoney(t.total)}</span>
-                                             </div>
-                                             <div className="flex justify-between items-center">
-                                                  <div className="flex items-center gap-2 text-xs text-amber-600 font-bold bg-amber-50 px-2 py-1 rounded-lg"><Clock className="w-3 h-3"/> Esperando productos...</div>
-                                                  <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-amber-500"/>
+                             <div className="animate-in slide-in-from-right space-y-3">
+                                 {transactions.filter(t => t.saleStatus === 'pending_order' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).map(t => (
+                                     <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-amber-300 transition-all group">
+                                         <div className="flex justify-between mb-2">
+                                             <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
+                                             <div className="flex flex-col items-end">
+                                                  <span className="font-black text-slate-600">${formatMoney(t.total)}</span>
+                                                  {getPaymentStatusBadge(t)}
                                              </div>
                                          </div>
-                                     ))}
-                                     {transactions.filter(t => t.saleStatus === 'pending_order').length === 0 && <div className="text-center py-10 text-slate-400 italic">No hay pedidos pendientes de stock.</div>}
-                                 </div>
+                                         <div className="flex justify-between items-center">
+                                              <div className="flex items-center gap-2 text-xs text-amber-600 font-bold bg-amber-50 px-2 py-1 rounded-lg"><Clock className="w-3 h-3"/> Esperando productos...</div>
+                                         </div>
+                                     </div>
+                                 ))}
+                                 {transactions.filter(t => t.saleStatus === 'pending_order' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).length === 0 && <div className="text-center py-10 text-slate-400 italic">No hay pedidos pendientes de stock.</div>}
                              </div>
                         )}
 
                         {/* 2. LISTOS */}
                         {orderViewTab === 'ready' && (
-                             <div className="animate-in slide-in-from-right">
-                                 <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 pl-1">Listos para Entregar</div>
-                                 <div className="space-y-3">
-                                     {transactions.filter(t => t.saleStatus === 'pending_delivery').map(t => (
-                                         <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-emerald-500 shadow-sm cursor-pointer hover:bg-emerald-50/30 transition-all">
-                                             <div className="flex justify-between mb-1">
-                                                 <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
+                             <div className="animate-in slide-in-from-right space-y-3">
+                                 {transactions.filter(t => t.saleStatus === 'pending_delivery' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).map(t => (
+                                     <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-emerald-500 shadow-sm cursor-pointer hover:bg-emerald-50/30 transition-all">
+                                         <div className="flex justify-between mb-1">
+                                             <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
+                                             <div className="flex flex-col items-end">
                                                  <span className="font-black text-slate-800">${formatMoney(t.total)}</span>
-                                             </div>
-                                             <div className="text-xs text-emerald-600 font-bold mb-4 flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Todo en Stock</div>
-                                             <div className="flex gap-2">
-                                                 <button onClick={(e) => { e.stopPropagation(); handleNotifyClient(t); }} className="flex-1 py-2 bg-slate-100 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200">Avisar</button>
-                                                 <button onClick={(e) => { e.stopPropagation(); handleDeliverOrder(t); }} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-sm">Despachar</button>
+                                                 {getPaymentStatusBadge(t)}
                                              </div>
                                          </div>
-                                     ))}
-                                     {transactions.filter(t => t.saleStatus === 'pending_delivery').length === 0 && <div className="text-center py-10 text-slate-400 italic">No hay pedidos listos.</div>}
-                                 </div>
+                                         <div className="text-xs text-emerald-600 font-bold mb-4 flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Todo en Stock</div>
+                                         <div className="flex gap-2">
+                                             <button onClick={(e) => { e.stopPropagation(); handleNotifyClient(t); }} className="flex-1 py-2 bg-slate-100 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200">Avisar</button>
+                                             <button onClick={(e) => { e.stopPropagation(); handleDeliverOrder(t); }} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-sm">Despachar</button>
+                                         </div>
+                                     </div>
+                                 ))}
+                                 {transactions.filter(t => t.saleStatus === 'pending_delivery' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).length === 0 && <div className="text-center py-10 text-slate-400 italic">No hay pedidos listos.</div>}
                              </div>
                         )}
 
                         {/* 3. EN REPARTO */}
                         {orderViewTab === 'transit' && (
-                             <div className="animate-in slide-in-from-right">
-                                 <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 pl-1">En la calle</div>
-                                 <div className="space-y-3">
-                                     {transactions.filter(t => t.saleStatus === 'in_transit').map(t => (
-                                         <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-orange-500 shadow-sm cursor-pointer hover:bg-orange-50/30 transition-all">
-                                             <div className="flex justify-between mb-1">
-                                                 <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
-                                                 <span className="font-black text-slate-800">${formatMoney(t.total)}</span>
+                             <div className="animate-in slide-in-from-right space-y-3">
+                                 {transactions.filter(t => t.saleStatus === 'in_transit' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).map(t => (
+                                     <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border-l-4 border-orange-500 shadow-sm cursor-pointer hover:bg-orange-50/30 transition-all">
+                                         <div className="flex justify-between mb-1">
+                                             <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
+                                             <div className="flex flex-col items-end">
+                                                  <span className="font-black text-slate-800">${formatMoney(t.total)}</span>
+                                                  {getPaymentStatusBadge(t)}
                                              </div>
-                                             <div className="text-xs text-stone-500 flex items-center gap-1"><Truck className="w-3 h-3"/> Lleva: <span className="font-bold">{t.courier}</span></div>
                                          </div>
-                                     ))}
-                                     {transactions.filter(t => t.saleStatus === 'in_transit').length === 0 && <div className="text-center py-10 text-slate-400 italic">Nada en reparto.</div>}
-                                 </div>
+                                         <div className="text-xs text-stone-500 flex items-center gap-1 mb-2"><Truck className="w-3 h-3"/> Lleva: <span className="font-bold">{t.courier}</span></div>
+                                         <button onClick={(e) => { e.stopPropagation(); finalizeDelivery(t); }} className="w-full py-2 bg-orange-500 text-white rounded-xl text-xs font-bold hover:bg-orange-600 shadow-sm">Marcar Entregado</button>
+                                     </div>
+                                 ))}
+                                 {transactions.filter(t => t.saleStatus === 'in_transit' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).length === 0 && <div className="text-center py-10 text-slate-400 italic">Nada en reparto.</div>}
+                             </div>
+                        )}
+
+                        {/* 4. ENTREGADOS */}
+                        {orderViewTab === 'completed' && (
+                             <div className="animate-in slide-in-from-right space-y-3">
+                                 {transactions.filter(t => t.saleStatus === 'completed' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).map(t => (
+                                     <div key={t.id} onClick={() => setReceiptDetails(t)} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-blue-200 transition-all opacity-80 hover:opacity-100">
+                                         <div className="flex justify-between mb-1">
+                                             <span className="font-bold text-slate-800 text-lg">{getClientName(t.clientId)}</span>
+                                             <div className="flex flex-col items-end">
+                                                  <span className="font-black text-slate-600">${formatMoney(t.total)}</span>
+                                                  {getPaymentStatusBadge(t)}
+                                             </div>
+                                         </div>
+                                         <div className="text-xs text-slate-400">{formatDateSimple(t.date.seconds)} • Entregado</div>
+                                     </div>
+                                 ))}
+                                 {transactions.filter(t => t.saleStatus === 'completed' && (paymentFilter === 'all' || (paymentFilter === 'paid' ? t.paymentStatus === 'paid' : t.paymentStatus !== 'paid'))).length === 0 && <div className="text-center py-10 text-slate-400 italic">No hay historial.</div>}
                              </div>
                         )}
                     </div>
@@ -1159,7 +1134,7 @@ export default function PosApp() {
             </div>
         )}
 
-        {/* === VIEW: FINANCES (RECEIVABLES) === */}
+        {/* === VIEW: FINANCES (RECEIVABLES) - REDESIGNED === */}
         {view === 'finances' && (
             <div className="p-6 h-full overflow-y-auto bg-slate-50">
                 <div className="max-w-4xl mx-auto">
@@ -1169,23 +1144,28 @@ export default function PosApp() {
                         <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-10 -mt-10 blur-xl"></div>
                     </div>
                     <div className="space-y-3">
-                        {transactions.filter(t => t.type === 'sale' && t.paymentStatus !== 'paid').map(tx => (
-                            <div key={tx.id} onClick={() => { setSelectedPaymentTx(tx); setPaymentModalOpen(true); }} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-teal-500 transition-all hover:shadow-md group">
-                                <div className="flex justify-between items-center">
-                                    <div className="flex items-center gap-4">
-                                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-teal-800">{getClientName(tx.clientId).charAt(0)}</div>
-                                        <div><div className="font-bold text-slate-800">{getClientName(tx.clientId)}</div><div className="text-xs text-slate-400">{formatDateSimple(tx.date.seconds)}</div></div>
+                        {/* Group by Client Logic */}
+                        {Array.from(new Set(transactions.filter(t => t.type === 'sale' && t.paymentStatus !== 'paid').map(t => t.clientId))).map(clientId => {
+                            const clientTx = transactions.filter(t => t.type === 'sale' && t.clientId === clientId && t.paymentStatus !== 'paid');
+                            const totalDebt = clientTx.reduce((acc, t) => acc + t.balance, 0);
+                            return (
+                                <div key={clientId} onClick={() => { setSelectedClientFinances({ id: clientId, name: getClientName(clientId), orders: clientTx }); setIsFinancesModalOpen(true); }} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-teal-500 transition-all hover:shadow-md group">
+                                    <div className="flex justify-between items-center">
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-teal-800">{getClientName(clientId).charAt(0)}</div>
+                                            <div><div className="font-bold text-slate-800">{getClientName(clientId)}</div><div className="text-xs text-slate-400">{clientTx.length} pedidos pendientes</div></div>
+                                        </div>
+                                        <div className="text-right"><div className="font-bold text-rose-600 bg-rose-50 px-3 py-1 rounded-lg">Debe: ${formatMoney(totalDebt)}</div></div>
                                     </div>
-                                    <div className="text-right"><div className="font-bold text-rose-600 bg-rose-50 px-3 py-1 rounded-lg">Debe: ${formatMoney(tx.balance)}</div><div className="text-[10px] text-slate-400 mt-1">Total: ${formatMoney(tx.total)}</div></div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             </div>
         )}
 
-        {/* === VIEW: PAYABLES (NEW) === */}
+        {/* === VIEW: PAYABLES === */}
         {view === 'payables' && (
             <div className="p-6 h-full overflow-y-auto bg-slate-50">
                 <div className="max-w-4xl mx-auto">
@@ -1212,6 +1192,194 @@ export default function PosApp() {
         )}
       </main>
 
+      {/* --- FINANCES (CLIENT DETAIL) MODAL --- */}
+      {isFinancesModalOpen && selectedClientFinances && (
+          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-white rounded-3xl w-full max-w-md flex flex-col max-h-[85vh] shadow-2xl">
+                  <div className="p-6 border-b border-[#e5e7eb] flex justify-between items-center bg-[#fdfbf7] rounded-t-3xl">
+                      <div><h2 className="font-serif font-bold text-xl text-[#1e4620]">{selectedClientFinances.name}</h2><p className="text-xs text-slate-500">Selecciona pedidos a pagar</p></div>
+                      <button onClick={() => { setIsFinancesModalOpen(false); setSelectedOrdersToPay([]); }} className="p-2 bg-white border border-stone-200 rounded-full hover:bg-stone-100"><X className="w-5 h-5 text-stone-500"/></button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-6 space-y-3 bg-[#fdfbf7]">
+                      {selectedClientFinances.orders.map(order => (
+                          <div key={order.id} onClick={() => { 
+                                if (selectedOrdersToPay.includes(order.id)) setSelectedOrdersToPay(prev => prev.filter(id => id !== order.id));
+                                else setSelectedOrdersToPay(prev => [...prev, order.id]);
+                           }} className={`p-4 rounded-xl border-2 cursor-pointer flex justify-between items-center transition-all ${selectedOrdersToPay.includes(order.id) ? 'bg-teal-50 border-teal-500' : 'bg-white border-slate-200'}`}>
+                              <div className="flex items-center gap-3">
+                                  {selectedOrdersToPay.includes(order.id) ? <CheckSquare className="w-5 h-5 text-teal-600"/> : <Square className="w-5 h-5 text-slate-300"/>}
+                                  <div><div className="font-bold text-slate-800 text-sm">Pedido #{order.displayId}</div><div className="text-xs text-slate-400">{formatDateSimple(order.date.seconds)}</div></div>
+                              </div>
+                              <div className="text-right"><div className="font-bold text-rose-600">${formatMoney(order.balance)}</div><div className="text-[10px] text-slate-400">Total: ${formatMoney(order.total)}</div></div>
+                          </div>
+                      ))}
+                  </div>
+                  <div className="p-6 bg-white border-t border-[#e5e7eb] shadow-[0_-5px_20px_rgba(0,0,0,0.05)]">
+                        <div className="mb-4">
+                            <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Monto a Pagar</label>
+                            <MoneyInput className="w-full text-center text-3xl font-black text-[#1e4620] border-b-2 border-stone-200 focus:border-[#d97706] outline-none pb-2 bg-transparent" value={paymentAmountInput} onChange={setPaymentAmountInput} placeholder="$0" />
+                            {selectedOrdersToPay.length > 0 && <div className="text-center text-xs text-slate-400 mt-2">Deuda Seleccionada: ${formatMoney(selectedClientFinances.orders.filter(o => selectedOrdersToPay.includes(o.id)).reduce((a,b)=>a+b.balance,0))}</div>}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 mb-4">
+                             <button onClick={() => setPaymentMethod('Efectivo')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Efectivo' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Efectivo</button>
+                             <button onClick={() => setPaymentMethod('Transferencia')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Transferencia' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Transferencia</button>
+                        </div>
+                        <button onClick={handlePaySelectedOrders} disabled={selectedOrdersToPay.length === 0} className="w-full py-3 bg-[#1e4620] text-white rounded-xl font-bold shadow-lg hover:bg-[#153316] disabled:opacity-50 disabled:cursor-not-allowed">Pagar Seleccionados</button>
+                  </div>
+              </div>
+          </div>
+      )}
+      
+      {/* --- ORDER DETAILS MODAL (Updated) --- */}
+      {receiptDetails && (
+          <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-white rounded-3xl w-full max-w-md flex flex-col max-h-[90vh] shadow-2xl overflow-hidden">
+                  <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <div><h3 className="font-serif font-bold text-xl text-slate-800">Detalle Pedido</h3><p className="text-xs text-slate-500">#{receiptDetails.displayId} • {getClientName(receiptDetails.clientId)}</p></div>
+                      <button onClick={() => setReceiptDetails(null)} className="p-2 bg-white rounded-full hover:bg-slate-200"><X className="w-5 h-5 text-slate-500"/></button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                      {/* Products */}
+                      <div className="space-y-2">
+                          {(receiptDetails.items || []).map((item, idx) => (
+                              <div key={idx} className="flex justify-between items-center text-sm border-b border-slate-50 pb-2 last:border-0">
+                                  <div className="font-bold text-slate-700">{item.name} <span className="text-xs font-normal text-slate-400">x{item.qty}</span></div>
+                                  <div className="font-bold text-slate-900">${formatMoney(item.transactionPrice * item.qty)}</div>
+                              </div>
+                          ))}
+                          <div className="flex justify-between pt-2 border-t border-slate-200"><span className="font-bold text-slate-500">Total</span><span className="font-black text-lg text-slate-800">${formatMoney(receiptDetails.total)}</span></div>
+                      </div>
+
+                      {/* Payment Status & Actions */}
+                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                           <div className="flex justify-between items-center mb-2">
+                               <span className="text-xs font-bold text-slate-400 uppercase">Estado Pago</span>
+                               {getPaymentStatusBadge(receiptDetails)}
+                           </div>
+                           <div className="flex justify-between items-center mb-4">
+                               <span className="text-sm text-slate-600">Saldo Pendiente</span>
+                               <span className="font-black text-rose-600">${formatMoney(receiptDetails.balance)}</span>
+                           </div>
+                           {/* Quick Pay Action inside Details - Uses Single Payment Modal (Per Order) */}
+                           {receiptDetails.balance > 0 && (
+                               <button onClick={() => { 
+                                   setSelectedPaymentTx(receiptDetails); 
+                                   setPaymentModalOpen(true);
+                                   setReceiptDetails(null); 
+                               }} className="w-full py-2 bg-teal-600 text-white rounded-lg font-bold text-sm hover:bg-teal-700">Gestionar Pagos</button>
+                           )}
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- PAYMENT MODAL (Single Order) --- */}
+      {paymentModalOpen && selectedPaymentTx && (
+          <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
+                  {/* Dynamic Header based on transaction type (Sale vs Purchase) */}
+                  <div className={`p-6 text-white ${selectedPaymentTx.type === 'sale' ? 'bg-[#1e4620]' : 'bg-[#d97706]'}`}>
+                      <div className="flex justify-between items-center">
+                          <h2 className="font-serif font-bold text-2xl">{selectedPaymentTx.type === 'sale' ? 'Cobrar Pedido' : 'Pagar'}</h2>
+                          <button onClick={() => setPaymentModalOpen(false)} className="p-1 bg-white/20 rounded-full hover:bg-white/30"><X className="w-5 h-5"/></button>
+                      </div>
+                      <p className="opacity-80 text-sm mt-1">{getClientName(selectedPaymentTx.clientId)}</p>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-6 bg-[#fdfbf7]">
+                      <div className="space-y-3 mb-6">
+                          {(selectedPaymentTx.paymentSchedule || []).map((item, idx) => {
+                              const paidSoFar = item.paidAmount || 0; const isFullyPaid = paidSoFar >= item.amount;
+                              return <div key={idx} onClick={() => { if (isFullyPaid) return; setSelectedPaymentIndex(idx); setPaymentAmountInput(item.amount - paidSoFar); }} className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${isFullyPaid ? 'bg-emerald-50 border-emerald-100 opacity-60' : selectedPaymentIndex === idx ? 'bg-white border-[#1e4620]' : 'bg-white border-stone-200'}`}><div className="flex justify-between items-center"><span className="font-bold text-sm text-[#1e4620]">{item.type === 'cuota' ? `Cuota ${item.number}` : 'Saldo'}</span><span className="font-black text-[#1e4620]">${formatMoney(item.amount)}</span></div></div>
+                          })}
+                      </div>
+                      {selectedPaymentIndex !== null && (
+                          <div className="bg-white p-5 rounded-2xl shadow-sm border border-stone-100 animate-in slide-in-from-bottom-2 space-y-4">
+                              <div>
+                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Monto</label>
+                                  <MoneyInput className="w-full text-center text-3xl font-black text-[#1e4620] border-b-2 border-stone-200 focus:border-[#d97706] outline-none pb-2 bg-transparent" value={paymentAmountInput} onChange={setPaymentAmountInput} placeholder="$0" autoFocus />
+                              </div>
+                              
+                              {/* Payment Method Selection */}
+                              <div>
+                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Medio de Pago</label>
+                                  <div className="grid grid-cols-2 gap-2">
+                                      {selectedPaymentTx.type === 'sale' ? (
+                                          <>
+                                              <button onClick={() => setPaymentMethod('Efectivo')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Efectivo' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Efectivo</button>
+                                              <button onClick={() => setPaymentMethod('Transferencia')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Transferencia' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Transferencia</button>
+                                          </>
+                                      ) : (
+                                          <>
+                                              <button onClick={() => setPaymentMethod('TC Itaú')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'TC Itaú' ? 'bg-[#d97706] text-white border-[#d97706]' : 'bg-white text-stone-500 border-stone-200'}`}>TC Itaú</button>
+                                              <button onClick={() => setPaymentMethod('Cuenta Rut')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Cuenta Rut' ? 'bg-[#d97706] text-white border-[#d97706]' : 'bg-white text-stone-500 border-stone-200'}`}>Cuenta Rut</button>
+                                          </>
+                                      )}
+                                  </div>
+                              </div>
+
+                              {/* Receipt Upload (For Sales and Purchases) */}
+                              <div>
+                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Comprobante (Opcional)</label>
+                                  <div className="relative border-2 border-dashed border-stone-200 rounded-xl p-4 text-center hover:bg-stone-50 transition-colors">
+                                      <input type="file" accept="image/*" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => setPaymentReceiptFile(e.target.files[0])} />
+                                      <div className="flex flex-col items-center gap-1 pointer-events-none">
+                                          <Upload className="w-5 h-5 text-stone-400"/>
+                                          <span className="text-xs font-bold text-stone-500">{paymentReceiptFile ? paymentReceiptFile.name : "Subir Foto"}</span>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+                  <div className="p-6 bg-white border-t border-[#e5e7eb]">
+                      {selectedPaymentIndex !== null ? <button onClick={async () => {
+                          const amount = parseInt(paymentAmountInput) || 0; if(amount<=0) return;
+                          if (!paymentMethod) { triggerAlert("Falta Datos", "Selecciona un medio de pago", "error"); return; }
+                          
+                          setLoading(true); setProcessingMsg("Registrando pago...");
+                          
+                          let receiptUrl = null;
+                          if (paymentReceiptFile) {
+                              try {
+                                  const storageRef = ref(storage, `receipts/${Date.now()}_${paymentReceiptFile.name}`);
+                                  const snapshot = await uploadBytes(storageRef, paymentReceiptFile);
+                                  receiptUrl = await getDownloadURL(snapshot.ref);
+                              } catch (e) { console.error(e); }
+                          }
+
+                          let updatedSchedule = [...selectedPaymentTx.paymentSchedule]; let updatedBalance = selectedPaymentTx.balance;
+                          const item = updatedSchedule[selectedPaymentIndex]; const newTotalPaid = (item.paidAmount || 0) + amount;
+                          
+                          // Add payment history entry
+                          const newHistoryEntry = {
+                              amount,
+                              date: Date.now() / 1000,
+                              method: paymentMethod,
+                              receiptUrl
+                          };
+                          
+                          const currentHistory = item.paymentHistory || [];
+                          
+                          updatedSchedule[selectedPaymentIndex] = { 
+                              ...item, 
+                              paidAmount: newTotalPaid, 
+                              status: newTotalPaid >= item.amount ? 'paid' : 'partial',
+                              paymentHistory: [...currentHistory, newHistoryEntry]
+                          }; 
+                          
+                          updatedBalance -= amount;
+                          
+                          await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, selectedPaymentTx.id), { paymentSchedule: updatedSchedule, balance: updatedBalance, paymentStatus: updatedBalance <= 0 ? 'paid' : 'partial' });
+                          
+                          setLoading(false); setPaymentModalOpen(false); setPaymentReceiptFile(null); setPaymentMethod('');
+                          triggerAlert("Éxito", "Transacción registrada.", "success");
+                      }} className="w-full py-3 bg-[#1e4620] text-white rounded-xl font-bold shadow-lg">Confirmar</button> : <button onClick={() => setPaymentModalOpen(false)} className="w-full py-3 text-stone-400 font-bold">Cancelar</button>}
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* --- ADD TO ORDER MODAL --- */}
       {addToOrderModal.show && addToOrderModal.product && (
           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
@@ -1235,7 +1403,7 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- CART DETAILS MODAL (Updated with Supplier Payment Options) --- */}
+      {/* --- CART DETAILS MODAL --- */}
       {isCartDetailsOpen && (
           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
               <div className="bg-white rounded-3xl w-full max-w-sm flex flex-col max-h-[90vh] shadow-2xl">
@@ -1244,7 +1412,6 @@ export default function PosApp() {
                       <button onClick={() => setIsCartDetailsOpen(false)} className="p-2 bg-white border border-stone-200 rounded-full hover:bg-stone-100"><X className="w-5 h-5 text-stone-500"/></button>
                   </div>
                   <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                      {/* Products List */}
                       <div className="space-y-3">
                           {cart.map((item, idx) => (
                               <div key={idx} className="flex justify-between items-center border-b border-stone-100 pb-3 last:border-0">
@@ -1259,8 +1426,6 @@ export default function PosApp() {
                               </div>
                           ))}
                       </div>
-
-                      {/* Payment Options for Supplier */}
                       <div className="pt-4 border-t-2 border-dashed border-stone-200">
                           <h3 className="font-bold text-stone-400 text-xs uppercase tracking-wider mb-3">Plan de Pago a Proveedor</h3>
                           <div className="flex p-1 bg-stone-100 rounded-xl mb-4">
@@ -1315,7 +1480,7 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* --- PURCHASE HISTORY MODAL (NEW) --- */}
+      {/* --- PURCHASE HISTORY MODAL --- */}
       {isPurchaseHistoryOpen && (
           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
               <div className="bg-white rounded-3xl w-full max-w-md flex flex-col max-h-[85vh] shadow-2xl">
@@ -1442,112 +1607,6 @@ export default function PosApp() {
                   <form onSubmit={e => { e.preventDefault(); addDoc(collection(db, `artifacts/${APP_ID}/public/data/categories`), {name: new FormData(e.currentTarget).get('name')}); e.target.reset(); }} className="mb-4 flex gap-2"><input name="name" required className="flex-1 p-3 bg-[#fdfbf7] border border-stone-200 rounded-xl font-bold outline-none" placeholder="Nueva..."/><button className="p-3 bg-[#1e4620] text-white rounded-xl"><Plus/></button></form>
                   <div className="flex-1 overflow-y-auto space-y-2">{categories.map(cat => <div key={cat.id} className="flex justify-between items-center p-3 bg-[#fdfbf7] rounded-xl border border-stone-100"><span className="font-bold text-[#1e4620]">{cat.name}</span><button onClick={() => deleteDoc(doc(db, `artifacts/${APP_ID}/public/data/categories`, cat.id))} className="text-stone-400 hover:text-red-500"><Trash2 className="w-4 h-4"/></button></div>)}</div>
                   <button onClick={() => setIsCategoryModalOpen(false)} className="w-full mt-4 py-3 bg-stone-100 text-stone-500 rounded-xl font-bold">Cerrar</button>
-              </div>
-          </div>
-      )}
-
-      {/* --- PAYMENT MODAL (Generic) --- */}
-      {paymentModalOpen && selectedPaymentTx && (
-          <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
-                  {/* Dynamic Header based on transaction type (Sale vs Purchase) */}
-                  <div className={`p-6 text-white ${selectedPaymentTx.type === 'sale' ? 'bg-[#1e4620]' : 'bg-[#d97706]'}`}>
-                      <div className="flex justify-between items-center">
-                          <h2 className="font-serif font-bold text-2xl">{selectedPaymentTx.type === 'sale' ? 'Cobrar' : 'Pagar'}</h2>
-                          <button onClick={() => setPaymentModalOpen(false)} className="p-1 bg-white/20 rounded-full hover:bg-white/30"><X className="w-5 h-5"/></button>
-                      </div>
-                      <p className="opacity-80 text-sm mt-1">{selectedPaymentTx.clientId}</p>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-6 bg-[#fdfbf7]">
-                      <div className="space-y-3 mb-6">
-                          {(selectedPaymentTx.paymentSchedule || []).map((item, idx) => {
-                              const paidSoFar = item.paidAmount || 0; const isFullyPaid = paidSoFar >= item.amount;
-                              return <div key={idx} onClick={() => { if (isFullyPaid) return; setSelectedPaymentIndex(idx); setPaymentAmountInput(item.amount - paidSoFar); }} className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${isFullyPaid ? 'bg-emerald-50 border-emerald-100 opacity-60' : selectedPaymentIndex === idx ? 'bg-white border-[#1e4620]' : 'bg-white border-stone-200'}`}><div className="flex justify-between items-center"><span className="font-bold text-sm text-[#1e4620]">{item.type === 'cuota' ? `Cuota ${item.number}` : 'Saldo'}</span><span className="font-black text-[#1e4620]">${formatMoney(item.amount)}</span></div></div>
-                          })}
-                      </div>
-                      {selectedPaymentIndex !== null && (
-                          <div className="bg-white p-5 rounded-2xl shadow-sm border border-stone-100 animate-in slide-in-from-bottom-2 space-y-4">
-                              <div>
-                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Monto</label>
-                                  <MoneyInput className="w-full text-center text-3xl font-black text-[#1e4620] border-b-2 border-stone-200 focus:border-[#d97706] outline-none pb-2 bg-transparent" value={paymentAmountInput} onChange={setPaymentAmountInput} placeholder="$0" autoFocus />
-                              </div>
-                              
-                              {/* Payment Method Selection */}
-                              <div>
-                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Medio de Pago</label>
-                                  <div className="grid grid-cols-2 gap-2">
-                                      {selectedPaymentTx.type === 'sale' ? (
-                                          <>
-                                              <button onClick={() => setPaymentMethod('Efectivo')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Efectivo' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Efectivo</button>
-                                              <button onClick={() => setPaymentMethod('Transferencia')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Transferencia' ? 'bg-[#1e4620] text-white border-[#1e4620]' : 'bg-white text-stone-500 border-stone-200'}`}>Transferencia</button>
-                                          </>
-                                      ) : (
-                                          <>
-                                              <button onClick={() => setPaymentMethod('TC Itaú')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'TC Itaú' ? 'bg-[#d97706] text-white border-[#d97706]' : 'bg-white text-stone-500 border-stone-200'}`}>TC Itaú</button>
-                                              <button onClick={() => setPaymentMethod('Cuenta Rut')} className={`py-2 rounded-lg text-xs font-bold border transition-all ${paymentMethod === 'Cuenta Rut' ? 'bg-[#d97706] text-white border-[#d97706]' : 'bg-white text-stone-500 border-stone-200'}`}>Cuenta Rut</button>
-                                          </>
-                                      )}
-                                  </div>
-                              </div>
-
-                              {/* Receipt Upload (For Sales and Purchases) */}
-                              <div>
-                                  <label className="block text-xs font-bold text-stone-400 uppercase mb-2">Comprobante (Opcional)</label>
-                                  <div className="relative border-2 border-dashed border-stone-200 rounded-xl p-4 text-center hover:bg-stone-50 transition-colors">
-                                      <input type="file" accept="image/*" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => setPaymentReceiptFile(e.target.files[0])} />
-                                      <div className="flex flex-col items-center gap-1 pointer-events-none">
-                                          <Upload className="w-5 h-5 text-stone-400"/>
-                                          <span className="text-xs font-bold text-stone-500">{paymentReceiptFile ? paymentReceiptFile.name : "Subir Foto"}</span>
-                                      </div>
-                                  </div>
-                              </div>
-                          </div>
-                      )}
-                  </div>
-                  <div className="p-6 bg-white border-t border-[#e5e7eb]">
-                      {selectedPaymentIndex !== null ? <button onClick={async () => {
-                          const amount = parseInt(paymentAmountInput) || 0; if(amount<=0) return;
-                          if (!paymentMethod) { triggerAlert("Falta Datos", "Selecciona un medio de pago", "error"); return; }
-                          
-                          setLoading(true); setProcessingMsg("Registrando pago...");
-                          
-                          let receiptUrl = null;
-                          if (paymentReceiptFile) {
-                              try {
-                                  const storageRef = ref(storage, `receipts/${Date.now()}_${paymentReceiptFile.name}`);
-                                  const snapshot = await uploadBytes(storageRef, paymentReceiptFile);
-                                  receiptUrl = await getDownloadURL(snapshot.ref);
-                              } catch (e) { console.error(e); }
-                          }
-
-                          let updatedSchedule = [...selectedPaymentTx.paymentSchedule]; let updatedBalance = selectedPaymentTx.balance;
-                          const item = updatedSchedule[selectedPaymentIndex]; const newTotalPaid = (item.paidAmount || 0) + amount;
-                          
-                          // Add payment history entry
-                          const newHistoryEntry = {
-                              amount,
-                              date: Date.now() / 1000,
-                              method: paymentMethod,
-                              receiptUrl
-                          };
-                          
-                          const currentHistory = item.paymentHistory || [];
-                          
-                          updatedSchedule[selectedPaymentIndex] = { 
-                              ...item, 
-                              paidAmount: newTotalPaid, 
-                              status: newTotalPaid >= item.amount ? 'paid' : 'partial',
-                              paymentHistory: [...currentHistory, newHistoryEntry]
-                          }; 
-                          
-                          updatedBalance -= amount;
-                          
-                          await updateDoc(doc(db, `artifacts/${APP_ID}/public/data/transactions`, selectedPaymentTx.id), { paymentSchedule: updatedSchedule, balance: updatedBalance, paymentStatus: updatedBalance <= 0 ? 'paid' : 'partial' });
-                          
-                          setLoading(false); setPaymentModalOpen(false); setPaymentReceiptFile(null); setPaymentMethod('');
-                          triggerAlert("Éxito", "Transacción registrada.", "success");
-                      }} className="w-full py-3 bg-[#1e4620] text-white rounded-xl font-bold shadow-lg">Confirmar</button> : <button onClick={() => setPaymentModalOpen(false)} className="w-full py-3 text-stone-400 font-bold">Cancelar</button>}
-                  </div>
               </div>
           </div>
       )}
