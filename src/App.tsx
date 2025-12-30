@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Users, Plus, Minus, Trash2, Search, Menu, X, ChevronRight, Truck, History, Receipt, UserPlus, Calendar, Tag, Check, MessageCircle, AlertTriangle, BookOpen, Globe, Repeat, ArrowRight, ArrowLeft, CalendarDays, PackageCheck, ScrollText, DollarSign, Image as ImageIcon, Loader2,  CheckCircle2, Clock, AlertCircle, ShoppingBag, Palette, Globe2, ListChecks, CreditCard, TrendingUp, Wallet, PieChart, BarChart3, ArrowUpRight, ArrowDownRight, Filter, TrendingDown, ClipboardList, Pencil, Upload, CheckSquare, Square, Banknote, SearchX } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Package, Users, Plus, Minus, Trash2, Search, Menu, X, ChevronRight, Truck, History, Receipt, UserPlus, Calendar, Tag, Check, MessageCircle, AlertTriangle, BookOpen, Globe, Repeat, ArrowRight, ArrowLeft, CalendarDays, PackageCheck, ScrollText, DollarSign, Image as ImageIcon, Loader2,   CheckCircle2, Clock, AlertCircle, ShoppingBag, Palette, Globe2, ListChecks, CreditCard, TrendingUp, Wallet, PieChart, BarChart3, ArrowUpRight, ArrowDownRight, Filter, TrendingDown, ClipboardList, Pencil, Upload, CheckSquare, Square, Banknote, SearchX, Bike, Store } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, limit, increment, writeBatch, getDocs, where, getDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // --- CONFIGURATION ---
-// Restaurada tu configuración original
 const firebaseConfig = {
   apiKey: "AIzaSyDwPmUUYFYuoIZFKlY7T6ZHbBB65GeyJzo",
   authDomain: "natura-a5c0e.firebaseapp.com",
@@ -26,6 +25,7 @@ const APP_ID = "natura-produccion-main";
 const BRANDS = ['Natura', 'Avon', 'Cyzone', 'Esika', "L'Bel"];
 const SUPPLY_PROVIDERS = ['Natura', 'Belcorp']; 
 const COURIERS = ['Yo (Directo)', 'Mamá (Puesto Feria)', 'Tía Luisa']; 
+const CATEGORIES_LIST = ['Perfumería', 'Cuerpo', 'Rostro', 'Cabello', 'Maquillaje', 'Infantil', 'Hogar', 'Regalos'];
 
 // Updated ID Generator: Prefix + 5 digits
 const generateShortId = (prefix) => {
@@ -267,6 +267,7 @@ export default function PosApp() {
       const readyToDeliver = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'pending_delivery').length;
       const inTransit = transactions.filter(t => t.type === 'sale' && t.saleStatus === 'in_transit').length;
       const toArrive = transactions.filter(t => t.type === 'order' && t.saleStatus === 'pending_arrival').length;
+      const inventoryValue = products.reduce((sum, p) => sum + (p.stock * p.price), 0);
 
       const trendMap = {};
       filteredSales.forEach(t => {
@@ -295,8 +296,8 @@ export default function PosApp() {
       });
       const topClients = Object.values(clientMap).sort((a, b) => b.total - a.total).slice(0, 5);
 
-      return { totalSales, totalCost, totalMargin, marginPercent, pendingStock, readyToDeliver, inTransit, toArrive, trendData, topProducts, topClients };
-  }, [transactions, batches, dashboardDateFilter, dashboardCustomRange, clients]); 
+      return { totalSales, totalCost, totalMargin, marginPercent, pendingStock, readyToDeliver, inTransit, toArrive, trendData, topProducts, topClients, inventoryValue };
+  }, [transactions, batches, dashboardDateFilter, dashboardCustomRange, clients, products]); 
 
   const getPaymentStatusBadge = (tx) => {
       if (tx.paymentStatus === 'paid') return <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Pagado</span>;
@@ -488,7 +489,7 @@ export default function PosApp() {
       window.open(`https://wa.me/${client.phone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
-  const handleDeliverOrder = (transaction) => { setReceiptDetails(transaction); setSelectedCourier('Yo (Directo)'); setIsDeliveryModalOpen(true); };
+  const handleDeliverOrder = (transaction) => { setReceiptDetails(transaction); setSelectedCourier('Yo (Directo)'); setIsDeliveryModalOpen(true); setDeliveryTransaction(transaction); };
 
   const startDeliveryProcess = async () => {
       if (!deliveryTransaction) return;
@@ -1281,7 +1282,7 @@ export default function PosApp() {
         )}
       </main>
 
-      {/* --- PURCHASE HISTORY MODAL (Updated for Tracking) --- */}
+      {/* --- PURCHASE HISTORY MODAL --- */}
       {isPurchaseHistoryOpen && (
           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
               <div className="bg-white rounded-3xl w-full max-w-md flex flex-col max-h-[85vh] shadow-2xl">
@@ -1304,7 +1305,6 @@ export default function PosApp() {
                                           {t.saleStatus === 'completed' || t.type === 'stock_entry' ? 'Ingresado' : 'Por Llegar'}
                                       </div>
                                   </div>
-                                  {/* Tracking Mini-Display for Purchases */}
                                   <div className="text-[10px] text-stone-500 bg-stone-50 p-2 rounded-lg flex flex-col gap-1">
                                       <div className="flex justify-between"><span>Encargado:</span> <span>{formatDateFull(t.orderedAt?.seconds || t.date.seconds)}</span></div>
                                       {t.readyAt && <div className="flex justify-between text-teal-600 font-bold"><span>Llegada Stock:</span> <span>{formatDateFull(t.readyAt.seconds)}</span></div>}
@@ -1321,7 +1321,6 @@ export default function PosApp() {
       {isFinancesModalOpen && selectedClientFinances && (
           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
               <div className="bg-white rounded-3xl w-full max-w-md flex flex-col max-h-[85vh] shadow-2xl">
-                  {/* ... Same Finance Modal Code ... */}
                   <div className="p-6 border-b border-[#e5e7eb] flex justify-between items-center bg-[#fdfbf7] rounded-t-3xl">
                       <div><h2 className="font-serif font-bold text-xl text-[#1e4620]">{selectedClientFinances.name}</h2><p className="text-xs text-slate-500">Selecciona pedidos a pagar</p></div>
                       <button onClick={() => { setIsFinancesModalOpen(false); setSelectedOrdersToPay([]); }} className="p-2 bg-white border border-stone-200 rounded-full hover:bg-stone-100"><X className="w-5 h-5 text-stone-500"/></button>
@@ -1379,7 +1378,6 @@ export default function PosApp() {
                               <span className="text-[9px] text-center">{formatDateFull(receiptDetails.readyAt?.seconds)}</span>
                           </div>
                           <div className="h-px w-4 bg-slate-300"></div>
-                          {/* Only show 'Reparto' step for Sales, not Purchases */}
                           {receiptDetails.type === 'sale' && (
                               <>
                                 <div className={`flex flex-col items-center ${receiptDetails.dispatchedAt ? 'text-orange-500 font-bold' : ''}`}>
@@ -1457,7 +1455,6 @@ export default function PosApp() {
       )}
 
       {/* --- PAYMENT MODAL (Single Order) --- */}
-      {/* ... (Existing payment modal code remains, it's reused and solid) ... */}
       {paymentModalOpen && selectedPaymentTx && (
           <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
@@ -1587,9 +1584,6 @@ export default function PosApp() {
           </div>
       )}
 
-      {/* ... (Rest of Modals and Layout code) ... */}
-      {/* ... Reusing previous code for AddOrderModal, CartDetailsModal, SalesHistoryModal, ClientModal, HistoryModal etc. ... */}
-      
       {/* --- ADD TO ORDER MODAL --- */}
       {addToOrderModal.show && addToOrderModal.product && (
           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
@@ -1714,6 +1708,169 @@ export default function PosApp() {
                 </div>
             </div>
         </div>
+      )}
+
+      {/* =================================================================================== */}
+      {/* ========================== RESTORED MISSING MODALS ================================ */}
+      {/* =================================================================================== */}
+
+      {/* --- 1. CHECKOUT MODAL (For "Registrar Venta") --- */}
+      {isCheckoutModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+            <div className="bg-white rounded-3xl w-full max-w-sm flex flex-col max-h-[90vh] shadow-2xl">
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-3xl">
+                    <h2 className="font-serif font-bold text-xl text-teal-900">Finalizar Venta</h2>
+                    <button onClick={() => setIsCheckoutModalOpen(false)} className="p-2 bg-white rounded-full hover:bg-slate-200"><X className="w-5 h-5 text-slate-500"/></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                    {/* Client Selection */}
+                    <div>
+                        <div className="flex justify-between items-center mb-2">
+                            <label className="text-xs font-bold text-slate-400 uppercase">Cliente</label>
+                            <button onClick={() => { setEditingClient(null); setIsClientModalOpen(true); }} className="text-teal-600 text-xs font-bold hover:underline">+ Nuevo Cliente</button>
+                        </div>
+                        <div className="relative">
+                            <input ref={clientInputRef} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-teal-500" placeholder="Buscar cliente..." value={clientSearchTerm} onChange={e => { setClientSearchTerm(e.target.value); setShowClientOptions(true); }} onFocus={() => setShowClientOptions(true)}/>
+                            {showClientOptions && (filteredClientsForSearch.length > 0 || clientSearchTerm) && (
+                                <div className="absolute top-full left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-lg mt-1 max-h-48 overflow-y-auto z-20">
+                                    {filteredClientsForSearch.map(c => (
+                                        <button key={c.id} onClick={() => { setSelectedClient(c.id); setClientSearchTerm(c.name); setShowClientOptions(false); }} className="w-full text-left p-3 hover:bg-slate-50 font-bold text-sm text-slate-700 border-b border-slate-50 last:border-0">{c.name}</button>
+                                    ))}
+                                    {filteredClientsForSearch.length === 0 && <div className="p-3 text-xs text-slate-400 text-center">No encontrado. <button onClick={() => { setEditingClient({ name: clientSearchTerm }); setIsClientModalOpen(true); }} className="text-teal-600 font-bold underline">Crear</button></div>}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Payment Plan */}
+                    <div>
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Plan de Pago</label>
+                        <div className="flex p-1 bg-slate-100 rounded-xl mb-4">
+                            <button onClick={() => setPaymentPlanType('full')} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${paymentPlanType === 'full' ? 'bg-white shadow-sm text-teal-900' : 'text-slate-500'}`}>Contado / Total</button>
+                            <button onClick={() => setPaymentPlanType('installments')} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${paymentPlanType === 'installments' ? 'bg-white shadow-sm text-teal-900' : 'text-slate-500'}`}>Cuotas</button>
+                        </div>
+
+                        {paymentPlanType === 'installments' && (
+                            <div className="space-y-3 animate-in fade-in bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                <select className="w-full p-2 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 text-sm" value={checkoutData.installmentsCount} onChange={e => setCheckoutData({...checkoutData, installmentsCount: e.target.value, installmentDates: {}})}>
+                                    {[2,3,4,5,6].map(n => <option key={n} value={n}>{n} Cuotas</option>)}
+                                </select>
+                                <div className="space-y-2">
+                                    {Array.from({length: parseInt(checkoutData.installmentsCount)}).map((_, idx) => (
+                                        <div key={idx} className="flex items-center gap-2">
+                                            <div className="w-6 h-6 rounded-full bg-white border border-slate-200 flex items-center justify-center font-bold text-xs text-slate-500">{idx+1}</div>
+                                            <input type="date" className="flex-1 bg-white border border-slate-200 rounded-lg p-2 text-xs font-bold text-slate-700 outline-none focus:border-teal-500" value={checkoutData.installmentDates[idx] || ''} onChange={(e) => { const newDates = {...checkoutData.installmentDates, [idx]: e.target.value}; setCheckoutData({...checkoutData, installmentDates: newDates}); }}/>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="p-6 bg-slate-50 rounded-b-3xl border-t border-slate-200">
+                    <div className="flex justify-between items-center mb-4">
+                        <span className="font-bold text-slate-500 uppercase text-xs">Total a Pagar</span>
+                        <span className="font-black text-2xl text-teal-900">${formatMoney(cartTotal)}</span>
+                    </div>
+                    <button onClick={handleConfirmCheckout} className="w-full py-4 bg-teal-600 text-white rounded-xl font-bold shadow-lg hover:bg-teal-700 flex justify-center items-center gap-2">
+                        Confirmar Venta <Check className="w-5 h-5"/>
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* --- 2. PRODUCT MODAL (For "Guardar/Editar Producto") --- */}
+      {isProductModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+             <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl flex flex-col max-h-[90vh]">
+                 <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                     <h2 className="font-serif font-bold text-xl text-teal-900">{editingProduct ? 'Editar Producto' : 'Nuevo Producto'}</h2>
+                     <button onClick={() => setIsProductModalOpen(false)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X className="w-5 h-5 text-slate-500"/></button>
+                 </div>
+                 <form onSubmit={handleSaveProduct} className="flex-1 overflow-y-auto p-6 space-y-4">
+                     <div>
+                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Nombre Producto</label>
+                         <input name="name" required defaultValue={editingProduct?.name} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-teal-500"/>
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                         <div>
+                             <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Marca</label>
+                             <select name="brand" defaultValue={editingProduct?.brand || 'Natura'} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-teal-500">
+                                 {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
+                             </select>
+                         </div>
+                         <div>
+                             <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Precio Venta</label>
+                             <MoneyInput value={productPriceInput || editingProduct?.price} onChange={setProductPriceInput} placeholder="0" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-teal-500"/>
+                         </div>
+                     </div>
+                     <div>
+                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Categoría</label>
+                         <select name="category" defaultValue={editingProduct?.category || 'Cuerpo'} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-teal-500">
+                             {CATEGORIES_LIST.map(c => <option key={c} value={c}>{c}</option>)}
+                         </select>
+                     </div>
+                     <div>
+                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Imagen</label>
+                         <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:bg-slate-50 transition-colors relative">
+                             <input type="file" name="image" accept="image/*" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
+                             <ImageIcon className="w-8 h-8 text-slate-300 mx-auto mb-2"/>
+                             <span className="text-xs text-slate-400 font-bold">Toca para subir imagen</span>
+                         </div>
+                     </div>
+                     <button className="w-full py-4 bg-teal-600 text-white rounded-xl font-bold shadow-lg hover:bg-teal-700 mt-4">Guardar Producto</button>
+                     {editingProduct && (
+                        <button type="button" onClick={() => handleDeleteProduct(editingProduct.id)} className="w-full py-3 mt-2 text-rose-500 font-bold hover:bg-rose-50 rounded-xl">Eliminar Producto</button>
+                     )}
+                 </form>
+             </div>
+        </div>
+      )}
+
+      {/* --- 3. DELIVERY MODAL (For "Despachar") --- */}
+      {isDeliveryModalOpen && (
+          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl p-6">
+                  <h2 className="font-serif font-bold text-xl text-teal-900 mb-4">Despachar Pedido</h2>
+                  <p className="text-sm text-slate-500 mb-6">Selecciona quién realizará la entrega del pedido de <strong>{deliveryTransaction && getClientName(deliveryTransaction.clientId)}</strong>.</p>
+                  
+                  <div className="space-y-3 mb-6">
+                      {COURIERS.map(c => (
+                          <button key={c} onClick={() => setSelectedCourier(c)} className={`w-full p-4 rounded-xl border-2 text-left font-bold transition-all ${selectedCourier === c ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-100 text-slate-500 hover:border-slate-300'}`}>
+                              {c}
+                          </button>
+                      ))}
+                  </div>
+
+                  <div className="flex gap-3">
+                      <button onClick={() => setIsDeliveryModalOpen(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl font-bold">Cancelar</button>
+                      <button onClick={startDeliveryProcess} className="flex-1 py-3 bg-teal-600 text-white rounded-xl font-bold shadow-lg hover:bg-teal-700">Confirmar</button>
+                  </div>
+              </div>
+          </div>
+      )}
+      
+      {/* --- 4. CYCLE NAME MODAL (For "Compra por Ciclo") --- */}
+      {cycleNameModal.show && (
+          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in zoom-in-95">
+              <div className="bg-white rounded-3xl p-6 w-full max-w-xs shadow-2xl">
+                  <h3 className="font-serif font-bold text-xl text-teal-900 mb-2">Nombre del Ciclo</h3>
+                  <p className="text-xs text-slate-500 mb-4">Ej: Ciclo 14, Especial Navidad...</p>
+                  <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-teal-500 mb-4" autoFocus placeholder="Escribe aquí..." value={tempCycleName} onChange={e => setTempCycleName(e.target.value)} />
+                  <div className="flex gap-3">
+                      <button onClick={() => setCycleNameModal({ show: false, brand: '' })} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl font-bold">Cancelar</button>
+                      <button onClick={() => { 
+                          if (!tempCycleName) return; 
+                          setSupplyConfig({ type: 'cycle', brand: cycleNameModal.brand, cycleName: tempCycleName }); 
+                          setSupplyMode('shopping'); 
+                          setCycleNameModal({ show: false, brand: '' }); 
+                      }} className="flex-1 py-3 bg-teal-600 text-white rounded-xl font-bold shadow-lg hover:bg-teal-700">Continuar</button>
+                  </div>
+              </div>
+          </div>
       )}
 
     </div>
